@@ -1,0 +1,185 @@
+\documentclass[10pt]{article}
+
+\usepackage[margin=0.52in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{array,booktabs,hyperref}
+\usepackage{fancyhdr,float}
+
+\newcommand{\course}{CS 571}
+\newcommand{\assignment}{Homework 2 -- Entity and Relation Extraction}
+\newcommand{\studentname}{Shenghan Wen}
+\newcommand{\studentid}{2823256}
+
+\hypersetup{colorlinks=true,urlcolor=blue}
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\course\ -- Homework 2}
+\rhead{\studentname}
+\cfoot{\thepage}
+\setlength{\headheight}{14pt}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.24em}
+\setlength{\tabcolsep}{3.5pt}
+\renewcommand{\arraystretch}{1.08}
+\title{\vspace{-1.85cm}\large\course\\[0.12em]\normalsize\assignment}
+\author{\small\studentname\quad (\studentid)}
+\date{}
+
+\begin{document}
+\fontsize{8.5}{9.6}\selectfont
+\maketitle
+\thispagestyle{fancy}
+\vspace{-1.55em}
+
+This homework is finished with the assistance of Codex.
+
+\section*{I. Supervised Entity Tagging}
+
+\textbf{Task and protocol.}
+I treat named-entity recognition as token-level BIO classification over the six
+Re-DocRED types: PER, ORG, LOC, TIME, NUM, and MISC.  The model is trained only
+on the 3,053 documents in \texttt{train\_revised.json}.  The 500-document dev
+split is used for feature and hyperparameter selection.  After fixing every
+choice, I run the model once on the 500-document test split.  Evaluation is at
+the mention-span level: a prediction is correct only when sentence index,
+start, end, and type all exactly match a gold mention.  Thus every span, rather
+than every coreference cluster, contributes one item to micro precision,
+recall, and F1.
+
+\textbf{Model and features.}
+The tagger is an averaged multiclass linear classifier trained with stochastic
+gradient descent and log loss.  Sparse categorical features are mapped with
+\texttt{FeatureHasher}; this bounds memory and avoids learning a separate
+vocabulary.  For token $w_i$, the representation contains:
+\begin{itemize}
+  \setlength\itemsep{-0.18em}
+  \setlength\topsep{0.05em}
+  \item the original and case-folded token, compressed character shape,
+        capped length, and indicators for uppercase, title case, lowercase,
+        digits, embedded digits, hyphens, and alphanumeric form;
+  \item all case-folded prefixes and suffixes of lengths 1--5;
+  \item case-folded token and shape features from a $\pm3$ token window,
+        explicit sentence-boundary markers, and left/right lexical bigrams;
+  \item the preceding BIO tag (gold during training and predicted during
+        decoding), which gives the otherwise local classifier sequence context.
+\end{itemize}
+When gold spans overlap, longer spans are assigned first and later conflicts
+are skipped so that each sentence has one valid BIO sequence.  At inference,
+orphaned I-tags are repaired to B-tags.  Repeated mentions with the same type
+and normalized surface string are grouped into one Re-DocRED entity; grouping
+does not affect mention-level evaluation.
+
+\textbf{Selected hyperparameters.}
+The final classifier uses 524,288 hashed dimensions, L2 regularization with
+$\alpha=10^{-6}$, at most 20 epochs, convergence tolerance $10^{-3}$, averaged
+weights, and random seed 571.  Because O tokens dominate the corpus, they
+receive sample weight 0.60 while entity tokens receive weight 1.00.  The loss
+is one-vs-rest logistic loss; feature-hash signs are nonnegative.  These are the
+defaults in \texttt{ner\_predict.py}, while command-line options expose all
+of these settings for reproducible experiments.
+
+\textbf{Validation and parameter selection.}
+I used a sequential, dev-only coordinate search, beginning with the original
+configuration and retaining changes that improved strict micro-F1.  The table
+shows representative trials; settings not named in a row remain those of the
+preceding retained configuration.  The final three feature changes are
+cumulative.  No test labels were inspected during selection.
+
+\begin{table}[H]
+\centering\scriptsize
+\begin{tabular}{@{}l l c c c@{}}
+\toprule
+Trial & Main settings / change & Micro P & Micro R & Micro F1 \\
+\midrule
+Initial & $\alpha=2\mathrm{e}{-6}$, 15 epochs, O=.35, window=2, affix=4, hash=$2^{18}$ & .7400 & .7410 & .7405 \\
+Regularization & $\alpha=1\mathrm{e}{-6}$, 20 epochs & .7427 & .7448 & .7437 \\
+Stronger regularization & $\alpha=5\mathrm{e}{-6}$, 20 epochs & .7324 & .7331 & .7328 \\
+Class balance & O weight=.25 & .7355 & .7360 & .7358 \\
+Class balance & O weight=.45 & .7487 & .7509 & .7498 \\
+Class balance & O weight=.60 & .7503 & .7533 & .7518 \\
+Class balance & O weight=.80 & .7484 & .7506 & .7495 \\
+Context & window $2\rightarrow3$ (O=.60) & .7528 & .7542 & .7535 \\
+Hash capacity & $2^{18}\rightarrow2^{19}$ & .7532 & .7554 & .7543 \\
+\textbf{Selected} & maximum affix length $4\rightarrow5$ & \textbf{.7563} & \textbf{.7592} & \textbf{.7578} \\
+\bottomrule
+\end{tabular}
+\end{table}
+\vspace{-0.8em}
+
+The search shows that reducing regularization and increasing the O-token
+weight improve the precision--recall balance.  A third context token, more
+hash capacity, and length-5 affixes provide smaller cumulative gains.  The
+selected model improves dev micro-F1 by .0173 over the initial configuration.
+
+\textbf{Final span-level results.}
+The locked model transfers from dev to test with only a .0064 decrease in
+micro-F1.  TIME is easiest, followed by NUM; ORG and MISC remain the most
+difficult, mainly because of low recall and type ambiguity.
+
+\begin{table}[H]
+\centering\scriptsize
+\begin{tabular}{@{}l c c c c c c@{}}
+\toprule
+& \multicolumn{3}{c}{Dev} & \multicolumn{3}{c}{Test} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+Type & P & R & F1 & P & R & F1 \\
+\midrule
+PER  & .7696 & .8091 & .7889 & .7596 & .8176 & .7875 \\
+ORG  & .6995 & .5740 & .6306 & .6682 & .5535 & .6054 \\
+LOC  & .7421 & .8457 & .7905 & .7558 & .8342 & .7930 \\
+TIME & .9328 & .9205 & .9266 & .9226 & .9033 & .9128 \\
+NUM  & .7963 & .8627 & .8281 & .8104 & .8839 & .8456 \\
+MISC & .6019 & .5086 & .5514 & .5754 & .4750 & .5204 \\
+\midrule
+\textbf{Micro} & \textbf{.7563} & \textbf{.7592} & \textbf{.7578}
+               & \textbf{.7522} & \textbf{.7506} & \textbf{.7514} \\
+Macro & .7570 & .7534 & .7527 & .7486 & .7446 & .7441 \\
+\bottomrule
+\end{tabular}
+\end{table}
+\vspace{-0.8em}
+
+\newpage
+\thispagestyle{fancy}
+\fontsize{10}{12}\selectfont
+\subsection*{Error analysis}
+For analysis only, unmatched gold and predicted spans are paired one-to-one.
+Exact-boundary pairs with different types are paired first; remaining
+overlapping pairs are matched by same type and then token intersection-over-
+union.  On test there are 2,766 paired near misses: 1,780 type-only errors,
+600 boundary-only errors, and 386 with both errors.  Consequently 35.6\% of
+paired near misses involve a boundary error and 78.3\% involve a type error
+(the categories overlap).  A further 464 gold mentions are completely missed
+and 435 predictions are spurious.  Among the 986 boundary-involved pairs, 567
+are too narrow, 412 too wide, four shifted, and three mixed.
+
+\begin{table}[H]
+\centering\small
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+Gold $\backslash$ predicted & PER & ORG & LOC & TIME & NUM & MISC \\
+\midrule
+PER  & 0 & 47  & 168 & 1  & 2  & 91 \\
+ORG  & 161 & 0 & 333 & 2  & 5  & 148 \\
+LOC  & 170 & 114 & 0 & 1  & 1  & 141 \\
+TIME & 0 & 6 & 10 & 0 & 37 & 13 \\
+NUM  & 0 & 3 & 0 & 15 & 0 & 3 \\
+MISC & 184 & 185 & 309 & 10 & 6 & 0 \\
+\bottomrule
+\end{tabular}
+\par\vspace{0.2em}{\small\textbf{Table 1.} Test type-confusion counts for paired near misses
+with type disagreement. Rows are gold types and columns are predicted types;
+the diagonal is zero by construction.}
+\end{table}
+\vspace{-0.9em}
+
+The largest directed confusion is ORG$\rightarrow$LOC (333), followed by
+MISC$\rightarrow$LOC (309).  MISC also disperses into PER and ORG, which is
+consistent with its heterogeneous semantic role.  LOC recall is high but its
+false positives reduce precision, while ORG exhibits the opposite recall
+problem.  TIME/NUM confusions reflect date-like and quantity-like expressions.
+The high share of too-narrow spans suggests that local lexical evidence often
+finds an entity head but omits modifiers; stronger structured decoding or a
+span-level model would be a natural next improvement.
+
+\end{document}

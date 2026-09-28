@@ -1,0 +1,94 @@
+{
+  "documents": 500,
+  "error_analysis": {
+    "boundary_involved_share": 0.3206581352833638,
+    "boundary_patterns": {
+      "mixed": 8,
+      "shifted": 3,
+      "too_narrow": 473,
+      "too_wide": 393
+    },
+    "confusion_gold_by_predicted": {
+      "LOC": {
+        "LOC": 0,
+        "MISC": 113,
+        "NUM": 9,
+        "ORG": 89,
+        "PER": 203,
+        "TIME": 0
+      },
+      "MISC": {
+        "LOC": 314,
+        "MISC": 0,
+        "NUM": 5,
+        "ORG": 199,
+        "PER": 141,
+        "TIME": 12
+      },
+      "NUM": {
+        "LOC": 1,
+        "MISC": 3,
+        "NUM": 0,
+        "ORG": 0,
+        "PER": 0,
+        "TIME": 18
+      },
+      "ORG": {
+        "LOC": 326,
+        "MISC": 192,
+        "NUM": 3,
+        "ORG": 0,
+        "PER": 149,
+        "TIME": 2
+      },
+      "PER": {
+        "LOC": 234,
+        "MISC": 71,
+        "NUM": 0,
+        "ORG": 44,
+        "PER": 0,
+        "TIME": 0
+      },
+      "TIME": {
+        "LOC": 14,
+        "MISC": 11,
+        "NUM": 24,
+        "ORG": 4,
+        "PER": 0,
+        "TIME": 0
+      }
+    },
+    "counts": {
+      "boundary_and_type": 323,
+      "boundary_only": 554,
+      "exact": 9986,
+      "missed": 432,
+      "spurious": 482,
+      "type_only": 1858
+    },
+    "missed_by_type": {
+      "LOC": 72,
+      "MISC": 133,
+      "NUM": 31,
+      "ORG": 83,
+      "PER": 73,
+      "TIME": 40
+    },
+    "observations": [
+      "Most frequent type confusion: ORG -> LOC (326 paired spans).",
+      "Most frequent boundary pattern: too_narrow (473 spans).",
+      "Most completely missed gold type: MISC (133 spans).",
+      "Most frequent spurious predicted type: LOC (162 spans)."
+    ],
+    "paired_near_misses": 2735,
+    "spurious_by_type": {
+      "LOC": 162,
+      "MISC": 109,
+      "NUM": 66,
+      "ORG": 57,
+      "PER": 54,
+      "TIME": 34
+    },
+    "type_involved_share": 0.7974405850091407
+  }
+}
