@@ -247,10 +247,13 @@ def file_signature(path: Path) -> dict:
 def model_signature(
     train_path: Path, distant_path: Path | None, config: ModelConfig
 ) -> dict:
+    training_config = asdict(config)
+    training_config.pop("max_relations")
+    training_config.pop("relation_no_ratio")
     signature = {
         "feature_version": FEATURE_VERSION,
         "train": file_signature(train_path),
-        "config": asdict(config),
+        "config": training_config,
     }
     if distant_path is not None:
         signature["distant"] = file_signature(distant_path)

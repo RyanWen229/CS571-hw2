@@ -129,17 +129,6 @@
       "gold": 283,
       "predicted": 208
     },
-    "P1344": {
-      "name": "participant of",
-      "precision": 0.5691489361702128,
-      "recall": 0.4068441064638783,
-      "f1": 0.47450110864745015,
-      "tp": 107,
-      "fp": 81,
-      "fn": 156,
-      "gold": 263,
-      "predicted": 188
-    },
     "P710": {
       "name": "participant",
       "precision": 0.51,
@@ -150,6 +139,17 @@
       "fn": 110,
       "gold": 263,
       "predicted": 300
+    },
+    "P1344": {
+      "name": "participant of",
+      "precision": 0.5691489361702128,
+      "recall": 0.4068441064638783,
+      "f1": 0.47450110864745015,
+      "tp": 107,
+      "fp": 81,
+      "fn": 156,
+      "gold": 263,
+      "predicted": 188
     },
     "P495": {
       "name": "country of origin",
@@ -415,6 +415,17 @@
       "gold": 85,
       "predicted": 16
     },
+    "P127": {
+      "name": "owned by",
+      "precision": 1.0,
+      "recall": 0.03571428571428571,
+      "f1": 0.0689655172413793,
+      "tp": 3,
+      "fp": 0,
+      "fn": 81,
+      "gold": 84,
+      "predicted": 3
+    },
     "P156": {
       "name": "followed by",
       "precision": 0.22727272727272727,
@@ -437,16 +448,16 @@
       "gold": 84,
       "predicted": 16
     },
-    "P127": {
-      "name": "owned by",
-      "precision": 1.0,
-      "recall": 0.03571428571428571,
-      "f1": 0.0689655172413793,
-      "tp": 3,
-      "fp": 0,
-      "fn": 81,
-      "gold": 84,
-      "predicted": 3
+    "P54": {
+      "name": "member of sports team",
+      "precision": 0.5405405405405406,
+      "recall": 0.25,
+      "f1": 0.3418803418803419,
+      "tp": 20,
+      "fp": 17,
+      "fn": 60,
+      "gold": 80,
+      "predicted": 37
     },
     "P26": {
       "name": "spouse",
@@ -458,17 +469,6 @@
       "fn": 63,
       "gold": 80,
       "predicted": 34
-    },
-    "P54": {
-      "name": "member of sports team",
-      "precision": 0.5405405405405406,
-      "recall": 0.25,
-      "f1": 0.3418803418803419,
-      "tp": 20,
-      "fp": 17,
-      "fn": 60,
-      "gold": 80,
-      "predicted": 37
     },
     "P108": {
       "name": "employer",
@@ -525,17 +525,6 @@
       "gold": 72,
       "predicted": 32
     },
-    "P1412": {
-      "name": "languages spoken, written or signed",
-      "precision": 0.32894736842105265,
-      "recall": 0.352112676056338,
-      "f1": 0.3401360544217687,
-      "tp": 25,
-      "fp": 51,
-      "fn": 46,
-      "gold": 71,
-      "predicted": 76
-    },
     "P118": {
       "name": "league",
       "precision": 0.45121951219512196,
@@ -546,6 +535,17 @@
       "fn": 34,
       "gold": 71,
       "predicted": 82
+    },
+    "P1412": {
+      "name": "languages spoken, written or signed",
+      "precision": 0.32894736842105265,
+      "recall": 0.352112676056338,
+      "f1": 0.3401360544217687,
+      "tp": 25,
+      "fp": 51,
+      "fn": 46,
+      "gold": 71,
+      "predicted": 76
     },
     "P170": {
       "name": "creator",
@@ -624,17 +624,6 @@
       "gold": 61,
       "predicted": 15
     },
-    "P20": {
-      "name": "place of death",
-      "precision": 0.19230769230769232,
-      "recall": 0.3333333333333333,
-      "f1": 0.2439024390243902,
-      "tp": 20,
-      "fp": 84,
-      "fn": 40,
-      "gold": 60,
-      "predicted": 104
-    },
     "P194": {
       "name": "legislative body",
       "precision": 0.47368421052631576,
@@ -645,6 +634,17 @@
       "fn": 51,
       "gold": 60,
       "predicted": 19
+    },
+    "P20": {
+      "name": "place of death",
+      "precision": 0.19230769230769232,
+      "recall": 0.3333333333333333,
+      "f1": 0.2439024390243902,
+      "tp": 20,
+      "fp": 84,
+      "fn": 40,
+      "gold": 60,
+      "predicted": 104
     },
     "P86": {
       "name": "composer",
@@ -756,17 +756,6 @@
       "gold": 44,
       "predicted": 89
     },
-    "P159": {
-      "name": "headquarters location",
-      "precision": 0.2542372881355932,
-      "recall": 0.375,
-      "f1": 0.30303030303030304,
-      "tp": 15,
-      "fp": 44,
-      "fn": 25,
-      "gold": 40,
-      "predicted": 59
-    },
     "P272": {
       "name": "production company",
       "precision": 0.8571428571428571,
@@ -778,6 +767,17 @@
       "gold": 40,
       "predicted": 7
     },
+    "P159": {
+      "name": "headquarters location",
+      "precision": 0.2542372881355932,
+      "recall": 0.375,
+      "f1": 0.30303030303030304,
+      "tp": 15,
+      "fp": 44,
+      "fn": 25,
+      "gold": 40,
+      "predicted": 59
+    },
     "P137": {
       "name": "operator",
       "precision": 0.5,
@@ -788,6 +788,17 @@
       "fn": 33,
       "gold": 37,
       "predicted": 8
+    },
+    "P449": {
+      "name": "original network",
+      "precision": 0.47619047619047616,
+      "recall": 0.2777777777777778,
+      "f1": 0.3508771929824561,
+      "tp": 10,
+      "fp": 11,
+      "fn": 26,
+      "gold": 36,
+      "predicted": 21
     },
     "P37": {
       "name": "official language",
@@ -811,17 +822,6 @@
       "gold": 36,
       "predicted": 4
     },
-    "P449": {
-      "name": "original network",
-      "precision": 0.47619047619047616,
-      "recall": 0.2777777777777778,
-      "f1": 0.3508771929824561,
-      "tp": 10,
-      "fp": 11,
-      "fn": 26,
-      "gold": 36,
-      "predicted": 21
-    },
     "P364": {
       "name": "original language of work",
       "precision": 1.0,
@@ -832,6 +832,17 @@
       "fn": 21,
       "gold": 36,
       "predicted": 15
+    },
+    "P205": {
+      "name": "basin country",
+      "precision": 0.55,
+      "recall": 0.3548387096774194,
+      "f1": 0.43137254901960786,
+      "tp": 11,
+      "fp": 9,
+      "fn": 20,
+      "gold": 31,
+      "predicted": 20
     },
     "P36": {
       "name": "capital",
@@ -855,17 +866,6 @@
       "gold": 31,
       "predicted": 28
     },
-    "P205": {
-      "name": "basin country",
-      "precision": 0.55,
-      "recall": 0.3548387096774194,
-      "f1": 0.43137254901960786,
-      "tp": 11,
-      "fp": 9,
-      "fn": 20,
-      "gold": 31,
-      "predicted": 20
-    },
     "P176": {
       "name": "manufacturer",
       "precision": 0.5454545454545454,
@@ -877,17 +877,6 @@
       "gold": 29,
       "predicted": 11
     },
-    "P25": {
-      "name": "mother",
-      "precision": 0.0,
-      "recall": 0.0,
-      "f1": 0.0,
-      "tp": 0,
-      "fp": 0,
-      "fn": 27,
-      "gold": 27,
-      "predicted": 0
-    },
     "P582": {
       "name": "end time",
       "precision": 0.15789473684210525,
@@ -898,6 +887,17 @@
       "fn": 24,
       "gold": 27,
       "predicted": 19
+    },
+    "P25": {
+      "name": "mother",
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 27,
+      "gold": 27,
+      "predicted": 0
     },
     "P172": {
       "name": "ethnic group",

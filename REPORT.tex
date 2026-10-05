@@ -1,240 +1,210 @@
 \documentclass[10pt]{article}
-
 \usepackage[margin=0.52in]{geometry}
 \usepackage[T1]{fontenc}
 \usepackage{array,booktabs,hyperref}
 \usepackage{fancyhdr,float}
-
 \newcommand{\course}{CS 571}
 \newcommand{\assignment}{Homework 2 -- Entity and Relation Extraction}
 \newcommand{\studentname}{Shenghan Wen}
 \newcommand{\studentid}{2823256}
-
 \hypersetup{colorlinks=true,urlcolor=blue}
-\pagestyle{fancy}
-\fancyhf{}
-\lhead{\course\ -- Homework 2}
-\rhead{\studentname}
-\cfoot{\thepage}
-\setlength{\headheight}{14pt}
-\setlength{\parindent}{0pt}
-\setlength{\parskip}{0.24em}
-\setlength{\tabcolsep}{3.5pt}
-\renewcommand{\arraystretch}{1.08}
+\pagestyle{fancy}\fancyhf{}
+\lhead{\course\ -- Homework 2}\rhead{\studentname}\cfoot{\thepage}
+\setlength{\headheight}{14pt}\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.20em}\setlength{\tabcolsep}{3.2pt}
+\renewcommand{\arraystretch}{1.04}
 \title{\vspace{-1.85cm}\large\course\\[0.12em]\normalsize\assignment}
-\author{\small\studentname\quad (\studentid)}
-\date{}
+\author{\small\studentname\quad (\studentid)}\date{}
 
 \begin{document}
-\fontsize{9}{10.4}\selectfont
-\maketitle
-\thispagestyle{fancy}
-\vspace{-1.55em}
-
+\fontsize{8.8}{10.15}\selectfont
+\maketitle\thispagestyle{fancy}\vspace{-1.55em}
 This homework is finished with the assistance of Codex (GPT-5.6 Sol).
 
 \section*{I. Supervised Entity Tagging}
-
 \textbf{Task and protocol.}
-I formulate NER as token-level BIO classification over PER, ORG, LOC, TIME,
-NUM, and MISC.  A prediction is correct only when sentence, start, end, and type
-exactly match a gold mention.  Model and ensemble choices use the 500-document
-dev split; test is evaluated once after locking both stages.
+I convert mention spans to token-level BIO tags over PER, ORG, LOC, TIME, NUM,
+and MISC. A mention is correct only when document, sentence, start, end, and
+type exactly match gold. All settings are selected on the 500-document dev
+split; test is evaluated only after the NER and RE stages are locked.
 
-\textbf{Model and features.}
-The primary tagger is \texttt{bert-base-cased}, first trained on the 10,000
-weakly labeled documents and then fine-tuned on human labels.  Contextual
-WordPiece features encode identity, subword morphology, capitalization,
-punctuation, and bidirectional sentence context.  The first WordPiece receives
-the source token's BIO label; special and later pieces are masked.  A supervised
-\texttt{distilbert-base-cased} companion provides an independent vote.  Dev
-selection keeps every primary PER span and exact agreement between both models
-for ORG, LOC, TIME, NUM, and MISC.  Orphan I-tags become B-tags.  Mentions are
-grouped iff type and case-folded, whitespace-normalized surface string match.
+\textbf{Classifier and hand-written feature set.}
+The tagger is trained from scratch with scikit-learn: an averaged multiclass
+\texttt{SGDClassifier} with one-vs-rest logistic loss over nonnegative
+\texttt{FeatureHasher} columns. For token $w_i$, my feature function emits:
+original and case-folded form; prefixes/suffixes of lengths 1--5; compressed
+word shape; capped length; uppercase, title-case, lowercase, digit,
+embedded-digit, hyphen, and alphanumeric flags; case-folded word and shape for
+a $\pm3$ window; boundary symbols; left/right lexical bigrams; and the preceding
+BIO tag (gold in training, hypothesized in decoding). No pretrained encoder,
+pipeline, embedding, or external NER model is used.
 
-\textbf{Selected hyperparameters.}
-The primary uses one weak epoch and two human epochs, batch size 32, AdamW at
-$3\times10^{-5}$, weight decay .01, 10\% warmup, linear decay, clipping 1.0,
-maximum length 512, O-label weight .60, and seed 571.  Length-grouped batches
-reduce padding.  The companion uses two human epochs at $5\times10^{-5}$.
+\textbf{Training and decoding.}
+The selected model has $2^{19}$ hashed dimensions, L2 $\alpha=10^{-6}$, at
+most 20 epochs, tolerance $10^{-3}$, averaged weights, O-token weight .60, and
+seed 571. A width-4 left-to-right beam uses class log probabilities and rejects
+an I-X transition unless preceded by B-X or I-X; a final repair converts any
+remaining orphan I-X to B-X. Longer gold spans win annotation overlaps.
+Decoded mentions are grouped iff type and case-folded, whitespace-normalized
+surface form match.
 
-\textbf{Final span-level results.} The locked system gains .0197 test micro-F1
-over the supervised baseline (.8747 to .8944), approximately two points.
-
-\begin{table}[H]
-\centering\scriptsize
-\begin{tabular}{@{}l c c c c c c@{}}
-\toprule
+\begin{table}[H]\centering\scriptsize
+\begin{tabular}{@{}l c c c c c c@{}}\toprule
 & \multicolumn{3}{c}{Dev} & \multicolumn{3}{c}{Test} \\
 \cmidrule(lr){2-4}\cmidrule(lr){5-7}
-Type & P & R & F1 & P & R & F1 \\
-\midrule
-PER  & .9493 & .9630 & .9561 & .9330 & .9512 & .9420 \\
-ORG  & .8770 & .8053 & .8397 & .8814 & .7943 & .8356 \\
-LOC  & .9442 & .9153 & .9295 & .9484 & .9093 & .9285 \\
-TIME & .9539 & .9352 & .9445 & .9376 & .9212 & .9293 \\
-NUM  & .8081 & .8318 & .8198 & .8229 & .8571 & .8397 \\
-MISC & .8363 & .7215 & .7747 & .8427 & .7553 & .7966 \\
-\midrule
-\textbf{Micro} & \textbf{.9151} & \textbf{.8772} & \textbf{.8958}
-               & \textbf{.9129} & \textbf{.8766} & \textbf{.8944} \\
-\bottomrule
+Type & P & R & F1 & P & R & F1 \\\midrule
+PER  & .7837 & .8643 & .8220 & .7791 & .8591 & .8172 \\
+ORG  & .7074 & .6251 & .6637 & .7010 & .6177 & .6567 \\
+LOC  & .7802 & .8686 & .8221 & .7942 & .8533 & .8227 \\
+TIME & .9368 & .9170 & .9268 & .9241 & .9048 & .9144 \\
+NUM  & .7907 & .8395 & .8144 & .7937 & .8646 & .8276 \\
+MISC & .6413 & .5269 & .5785 & .6192 & .5364 & .5748 \\\midrule
+\textbf{Micro} & \textbf{.7783} & \textbf{.7854} & \textbf{.7818}
+& \textbf{.7766} & \textbf{.7818} & \textbf{.7792} \\\bottomrule
 \end{tabular}
-\par\vspace{0.15em}{\small\textbf{Table 1.} Exact mention span-and-type results for the final distant-supervision ensemble.}
-\end{table}
-\vspace{-0.6em}
+\par\vspace{0.1em}{\small\textbf{Table 1.} Exact mention span-and-type results for the allowed hand-feature tagger.}
+\end{table}\vspace{-0.65em}
 
-\textbf{Error analysis.}
-On test, 796 paired near misses contain 326 type-only, 368 boundary-only, and
-102 combined errors; another 802 gold mentions are missed and 287 predictions
-are spurious.  Boundary errors occur in 59.0\% of paired misses (285 too narrow,
-184 too wide).  MISC$\rightarrow$ORG is the largest type confusion (61), and
-MISC also has the most complete misses (260).  The precision-oriented ensemble
-removes many spurious spans but sacrifices recall, especially for heterogeneous
-MISC names.  Span decoding with learned boundary scores is the clearest next step.
+\textbf{NER confusion matrix and errors.}
+Table 2 aligns predictions to gold only when boundaries are exact; unmatched
+gold/predictions enter the Miss column/Spurious row. Thus the diagonal sums to
+10,124 exact true positives and the off-diagonal cells are 1,497 type errors.
+\begin{table}[H]\centering\scriptsize
+\begin{tabular}{@{}lrrrrrrr@{}}\toprule
+Gold $\backslash$ Pred & PER & ORG & LOC & TIME & NUM & MISC & Miss \\\midrule
+PER  & \textbf{2025} & 29 & 100 & 1 & 1 & 62 & 139 \\
+ORG  & 128 & \textbf{1144} & 240 & 1 & 3 & 107 & 229 \\
+LOC  & 133 & 81 & \textbf{3520} & 0 & 1 & 81 & 309 \\
+TIME & 0 & 3 & 7 & \textbf{1815} & 20 & 7 & 154 \\
+NUM  & 1 & 0 & 0 & 8 & \textbf{581} & 0 & 82 \\
+MISC & 133 & 158 & 185 & 3 & 4 & \textbf{1039} & 415 \\\midrule
+Spurious & 179 & 217 & 380 & 136 & 122 & 382 & -- \\\bottomrule
+\end{tabular}
+\par\vspace{0.1em}{\small\textbf{Table 2.} Test exact-boundary entity-type confusion counts.}
+\end{table}\vspace{-0.65em}
 
-\newpage
-\thispagestyle{fancy}
-\fontsize{9}{10.4}\selectfont
+ORG$\rightarrow$LOC (240) and MISC$\rightarrow$LOC (185) dominate type
+confusion; MISC also has the most misses (415). A separate overlap pairing
+finds 593 boundary-only errors and 351 errors involving both boundary and type.
+The model handles regular temporal/numeric patterns well but lexical ambiguity
+and unseen long names remain difficult.
+
+\newpage\thispagestyle{fancy}\fontsize{8.8}{10.15}\selectfont
 \section*{II. Relation Extraction}
+\textbf{Two-stage protocol and entity construction.}
+NER is selected and frozen on dev before RE selection. BIO segments become
+mentions; equal type plus case-folded normalized surface form defines an entity
+cluster and its \texttt{vertexSet} index. For $n$ entities, every ordered
+$(h,t)$ with $h\ne t$ is a candidate, so direction is explicit. Self-pairs and
+cross-document pairs are excluded.
 
-\textbf{Two-stage protocol.}
-The system is a strict cascade: NER is selected and frozen on dev; RE is then
-selected using full-pipeline dev F1; both are finally evaluated once on test.
-
-\textbf{Entity construction and candidate pairs.}
-The entity construction rule is the one used in Part I: repair orphaned I-tags,
-convert every BIO segment to a mention, then group mentions if and only if they
-have the same predicted type and identical case-folded, whitespace-normalized
-surface strings.  The groups are written in \texttt{vertexSet}; their list
-positions become entity indices.  For a document with $n$ entities, relation
-inference considers all $n(n-1)$ ordered pairs $(h,t)$ with $h\ne t$.  Direction
-is therefore explicit.  A pair is assigned one of the 96 Wikidata relations or
-\texttt{no\_relation}; self-pairs and cross-document pairs are never candidates.
-
-\textbf{Feature set.}
-For each ordered pair, sparse categorical features encode (1) head type,
-tail type, and their ordered combination; (2) normalized head/tail names, name
-tokens, and the ordered name pair; (3) mention-count buckets; (4) whether either
-name occurs in the document title; and (5) the closest pair of mentions:
-sentence distance, same-sentence status, argument order, token-distance bucket,
-up to 12 tokens between the mentions, and the immediate left/right token of
-each argument.  Features are mapped to $2^{19}=524{,}288$ nonnegative hashed
-dimensions, which controls memory while retaining lexical conjunctions.
-
-\textbf{Classifier and class imbalance.}
-The classifier is an averaged multiclass linear model trained by SGD with
-logistic loss and L2 regularization.  Settings are $\alpha=2\times10^{-6}$,
-25 epochs, tolerance $10^{-3}$, and seed 571.  All positives are retained;
-unrelated pairs are sampled at five per positive.  Frequency skew receives
-$\min(8,(n_{\max}/n_y)^{0.2})$ weighting.  The dev-selected decoder emits at
-most two relations whose probability is at least .90 times \texttt{no\_relation},
-recovering simultaneous relations missed by the earlier argmax decoder.
+\textbf{Feature set and classifier.}
+For each pair, sparse categorical features encode head/tail types and their
+order; normalized names, name tokens, and ordered name pair; mention-count
+buckets; title occurrence; closest-mention sentence distance, same-sentence
+status and argument order; token-distance bucket; up to 12 intervening tokens;
+and immediate left/right argument context. They map to $2^{19}$ nonnegative
+hashed dimensions. The classifier is averaged multiclass SGD with logistic
+loss, L2 $\alpha=2\times10^{-6}$, 25 epochs, tolerance $10^{-3}$, and seed 571.
+All positives are retained; unrelated pairs are sampled five per positive.
+Class weight is $\min(8,(n_{\max}/n_y)^{0.2})$. The dev-selected multi-label
+decoder emits at most two relations when $p(r)\ge .90p(\texttt{no\_relation})$.
 
 \textbf{Output and evaluation.}
-For every document, the predictor preserves its sentences and predicted
-\texttt{vertexSet}, removes any input relation labels, and writes a new
-\texttt{labels} list containing dictionaries \texttt{\{h,t,r\}}.  Both final
-dev and test files pass \texttt{check\_format.py --re} with zero errors and are
-accepted by \texttt{re\_eval.py}.  In gold-entity mode the evaluator uses entity
-indices directly.  In pipeline mode it aligns a predicted entity to a gold
-entity through exact shared mention spans; a triple involving an unaligned
-entity is a false positive.
+The predictor preserves sentences and predicted \texttt{vertexSet}, removes
+input labels, and writes dictionaries \texttt{\{h,t,r\}}. Both final files
+pass \texttt{check\_format.py --re} and \texttt{re\_eval.py}. Pipeline
+evaluation aligns predicted to gold entities through exact shared spans;
+triples with an unaligned endpoint are false positives.
 
-\begin{table}[H]
-\centering\small
-\begin{tabular}{@{}lllrrrrrr@{}}
-\toprule
-Split & Training & Entities & P & R & F1 & TP & FP & FN \\
-\midrule
-Dev  & supervised & Pipeline & .3631 & .2918 & .3236 & 5044 & 8847 & 12240 \\
-Dev  & + distant  & Pipeline & .3850 & .3856 & \textbf{.3853} & 6664 & 10646 & 10620 \\
-Test & supervised & Pipeline & .3620 & .2965 & .3260 & 5173 & 9117 & 12275 \\
-Test & + distant  & Pipeline & .3842 & .3957 & \textbf{.3899} & 6904 & 11066 & 10544 \\
-Test & + distant  & Gold & .4839 & .4629 & .4732 & 8077 & 8614 & 9371 \\
-\bottomrule
+\begin{table}[H]\centering\scriptsize
+\begin{tabular}{@{}lllrrrrrr@{}}\toprule
+Split & Training & Entities & P & R & F1 & TP & FP & FN \\\midrule
+Dev  & supervised & Pipeline & .3194 & .3569 & .3371 & 6169 & 13148 & 11115 \\
+Dev  & + distant  & Pipeline & .3255 & .3548 & \textbf{.3395} & 6133 & 12711 & 11151 \\
+Test & supervised & Pipeline & .3219 & .3607 & .3402 & 6293 & 13258 & 11155 \\
+Test & + distant  & Pipeline & .3246 & .3609 & \textbf{.3418} & 6297 & 13100 & 11151 \\
+Test & + distant  & Gold & .4839 & .4629 & .4732 & 8077 & 8614 & 9371 \\\bottomrule
 \end{tabular}
-\par\vspace{0.2em}{\small\textbf{Table 2.} Relation micro scores.  ``Pipeline''
-uses this system's own NER entities; ``Gold'' isolates the relation classifier.
-``+ distant'' uses the final frozen NER and dev-selected weak model/decoder.}
-\end{table}
+\par\vspace{0.1em}{\small\textbf{Table 3.} Relation micro scores with allowed NER entities.}
+\end{table}\vspace{-0.6em}
 
-The final test pipeline gains .0639 absolute F1 over supervised training.  It
-predicts 17,970 triples against 17,448 gold.  Predicted entities reach 90.7\%
-of gold entities and make 89.5\% of gold triples reachable.
+\textbf{RE confusion matrix.}
+Because RE is multi-label, Table 4 is the micro binary confusion matrix over
+all 19,072,320 possible gold-entity $(h,t,r)$ decisions (198,670 ordered pairs
+times 96 relations). It accompanies, rather than replaces, the pipeline score.
+\begin{table}[H]\centering\scriptsize
+\begin{tabular}{@{}lrr@{}}\toprule
+Gold $\backslash$ Pred & Relation & No relation \\\midrule
+Relation & \textbf{8,077} (TP) & 9,371 (FN) \\
+No relation & 8,614 (FP) & \textbf{19,046,258} (TN) \\\bottomrule
+\end{tabular}
+\par\vspace{0.1em}{\small\textbf{Table 4.} Test gold-entity micro confusion matrix.}
+\end{table}\vspace{-0.55em}
 
-\subsection*{Relation error analysis and pipeline gap}
-Replacing predicted entities with gold increases test precision from .3842 to
-.4839, recall from .3957 to .4629, and F1 from .3899 to .4732: an .0833 gap.
-Of 17,970 pipeline triples, 4,186 (23.3\%) use
-an entity that cannot be aligned to gold and therefore become automatic false
-positives.  Gold entities recover 1,173 correct triples, yet gold-entity recall
-is only .4629, so relation classification still causes most false negatives.
+\textbf{Error analysis and pipeline-versus-gold gap.}
+Replacing predicted entities with gold raises test F1 from .3418 to .4732, a
+.1314 gap. Predicted entities reach 90.1\% of gold entities and make 86.9\%
+of gold triples reachable; 5,930 predicted triples have an unaligned endpoint.
+Even with gold entities, 9,371 false negatives show that relation classification
+is still a major bottleneck. Frequent geographic labels remain confusable,
+while P527/P361 (has-part/part-of) suffer from direction and sparse evidence.
+Relation-specific thresholds and entity confidence are the clearest next steps.
 
-Errors are concentrated in frequent and semantically adjacent relations.
-\texttt{P131} and \texttt{P17} improve to F1 .5096 and .4734, but P17 produces
-2,664 false positives.  \texttt{P27} recall is .7606 with 1,871 false positives,
-showing weak-label overgeneralization.  Part relations remain hard
-(\texttt{P527} F1 .1777; \texttt{P361} .1687), and rare labels receive few or no
-predictions.  Calibrated relation-specific thresholds and entity confidence
-would directly target these errors.
-
-\newpage
-\thispagestyle{fancy}
-\fontsize{9}{10.4}\selectfont
+\newpage\thispagestyle{fancy}\fontsize{8.8}{10.15}\selectfont
 \section*{III. Extra Credit: Distant Supervision}
+\textbf{Database and weak labels.}
+I use Wikidata because DocRED's 96 predicates are Wikidata property IDs and
+Wikidata represents item--property--value statements \cite{wikidata}.
+Following DocRED \cite{docred}, mentions linked to the same KB item are merged
+and item pairs receive their Wikidata properties. For reproducibility,
+\texttt{prepare\_distant\_supervision.py} matches title plus complete tokenized
+text to official \texttt{train\_distant.json}, rather than using changing live
+queries. All 10,000 documents match, restoring 192,955 weak entity clusters
+and 147,974 weak relation labels.
 
-\textbf{Database and label construction.}
-I select Wikidata because DocRED's 96 predicates are already Wikidata property
-IDs.  Wikidata stores item--property--value statements \cite{wikidata}.
-Following DocRED \cite{docred}, mentions are linked to Wikidata items, identical
-KB IDs are merged, and item pairs receive their Wikidata properties.  For
-reproducibility, \texttt{prepare\_distant\_supervision.py} matches title plus
-complete tokenized text to the official \texttt{train\_distant.json}, rather
-than issuing time-varying live queries.  All 10,000 supplied documents match,
-restoring 192,955 weak entity clusters and 147,974 weak relation labels.
+\textbf{NER use and dev selection.}
+The final model keeps the same hand-written features and scikit-learn
+classifier. It adds all weak entity tokens plus O tokens within two positions
+of a weak mention; focused sampling avoids letting roughly two million weak O
+tokens dominate. Weak examples receive source weight .50 versus 1.0 for human
+examples. The weight was chosen on dev (.10, .20, .30, .50, .75 tried);
+features, classifier, and decoder remain unchanged. Thus no pretrained model
+is introduced.
 
-\textbf{Use in NER.}
-The BERT primary receives one weak epoch before two human epochs with a reset
-optimizer.  The supervised DistilBERT agreement filter is selected only on dev.
-This changes dev/test F1 from .8771/.8747 to .8958/.8944: +.0187/+.0197,
-approximately two points, while raising test precision from .8597 to .9129.
+\textbf{RE use and dev selection.}
+All weak positive pairs and sampled negative pairs are included with source
+weight .25. Human rows retain weight 1.0. The final decoder cap 2 and ratio
+.90 are selected on full-pipeline dev after NER is frozen. Stronger weak weight
+1.0 reduced dev F1 to .3291 and was rejected.
 
-\textbf{Use in RE.}
-All weak pair rows are included with source weight .25 versus 1.0 for human
-rows.  On the frozen final NER dev output, at most two relations and probability
-ratio .90 are selected.  Test F1 rises from .3260 to .3899 (+.0639).
-
-\begin{table}[H]
-\centering\small
-\begin{tabular}{@{}llrrr@{}}
-\toprule
-Stage & Split & Supervised F1 & + distant F1 & Gain \\
-\midrule
-NER & Dev  & .8771 & .8958 & +.0187 \\
-NER & Test & .8747 & .8944 & +.0197 \\
-RE pipeline & Dev  & .3236 & .3853 & +.0617 \\
-RE pipeline & Test & .3260 & .3899 & +.0639 \\
-\bottomrule
+\begin{table}[H]\centering\small
+\begin{tabular}{@{}llrrr@{}}\toprule
+Stage & Split & Supervised F1 & + distant F1 & Gain \\\midrule
+NER & Dev  & .7578 & .7818 & +.0240 \\
+NER & Test & .7514 & .7792 & +.0278 \\
+RE pipeline & Dev  & .3371 & .3395 & +.0024 \\
+RE pipeline & Test & .3402 & .3418 & +.0016 \\\bottomrule
 \end{tabular}
-\par\vspace{0.15em}{\small\textbf{Table 3.} Absolute micro-F1 improvement from the final distant-supervision pipeline.}
+\par\vspace{0.1em}{\small\textbf{Table 5.} Distant-supervision ablation with each model's dev-selected settings.}
 \end{table}
+Distant supervision clears two F1 points for NER but gives only a small RE gain;
+the report does not attribute decoder improvements to weak labels.
 
 \textbf{Reproducibility and output QA.}
 \texttt{make train-ner}, \texttt{make predict-ner SPLIT=dev}, and
-\texttt{make eval-ner SPLIT=dev} provide one-command NER operations; RE has the
-parallel three targets.  The four final JSON files pass \texttt{check\_format.py}
-with zero errors and both evaluators.  I also opened NER and RE test outputs in
-the supplied annotation viewer: all 500 documents render, with 12,434 mentions,
-six entity types, and 17,970 predicted triples across 91 relations.
+\texttt{make eval-ner SPLIT=dev} are the one-command NER operations; RE has
+parallel targets. Test replaces \texttt{dev} only after selection. The four
+JSON files pass both format checks and evaluators. I opened the NER and RE test
+outputs in the supplied annotation viewer; all 500 documents rendered with
+populated BIO/entity and relation layers.
 
 \begin{thebibliography}{2}\small
-\bibitem{docred} Y. Yao et al.  ``DocRED: A Large-Scale Document-Level Relation
-Extraction Dataset.'' ACL 2019.  \url{https://aclanthology.org/P19-1074/}
-\bibitem{wikidata} Wikimedia Foundation. ``Wikidata: Introduction'' and
-``Wikidata: Data model.'' Accessed October 5, 2026.
+\bibitem{docred} Y. Yao et al. "DocRED: A Large-Scale Document-Level Relation
+Extraction Dataset." ACL 2019. \url{https://aclanthology.org/P19-1074/}
+\bibitem{wikidata} Wikimedia Foundation. "Wikidata: Introduction" and
+"Wikidata: Data model." Accessed October 5, 2026.
 \url{https://www.wikidata.org/wiki/Wikidata:Introduction};
 \url{https://www.wikidata.org/wiki/Help:Data_model}
 \end{thebibliography}
-
 \end{document}

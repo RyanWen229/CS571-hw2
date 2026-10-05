@@ -26,7 +26,7 @@ Replace `dev` with `test` only for the final locked evaluation. Run `make valida
 | `data/unlabeled_10000.json` | 10,000 unlabeled documents (text only) for semi-supervised learning, sampled from DocRED's distantly supervised set |
 | `data/distant_10000.json` | The same 10,000 documents with recovered DocRED/Wikidata weak entity and relation labels |
 | `prepare_distant_supervision.py` | Exact text matcher that reconstructs `distant_10000.json` from the official DocRED release |
-| `ner_predict.py`, `ner_ensemble.py` | Distant-pretrained BIO tagger, supervised companion model, and dev-selected ensemble |
+| `ner_predict.py` | From-scratch scikit-learn BIO tagger with hand-written features and beam decoding |
 | `ner_eval.py` | Exact span-and-type NER evaluation |
 | `ner_error_analysis.py` | NER boundary and type error analysis |
 | `re_predict.py` | Hashed-feature relation classifier |
@@ -44,52 +44,38 @@ Replace `dev` with `test` only for the final locked evaluation. Run `make valida
 
 ### Named-entity recognition
 
-NER is formulated as sentence-level BIO tagging over six entity types: `PER`, `ORG`, `LOC`, `TIME`, `NUM`, and `MISC`. The primary tagger fine-tunes `bert-base-cased` as a 13-class token classifier after a distant-supervision stage; a supervised `distilbert-base-cased` companion supplies a precision-oriented ensemble vote.
+NER is sentence-level BIO tagging over `PER`, `ORG`, `LOC`, `TIME`, `NUM`, and `MISC`. The model is trained from scratch with scikit-learn; it does not use BERT, embeddings, a pretrained pipeline, or any external NER model.
 
 #### Input and label construction
 
-- Each sentence is supplied to the tokenizer as its existing Re-DocRED token list, so predicted positions remain aligned with the dataset's `[start, end)` token offsets.
-- Each fast tokenizer splits dataset tokens into WordPieces. The first WordPiece receives the token's BIO label; special tokens and later pieces are masked from the training loss.
+- Each sentence uses the existing Re-DocRED token list, so predicted positions remain aligned with `[start, end)` offsets.
 - If annotated spans overlap, longer spans are assigned first and conflicting shorter spans are skipped. This produces one valid BIO sequence per sentence.
-- The maximum encoded length is 512 WordPieces. The longest source sentence has fewer than 200 dataset tokens, so truncation is not expected for the supplied splits.
 
-#### Learned features
+#### Hand-written features
 
-The encoder learns a contextual representation rather than using a manually defined feature vector. Its evidence includes:
-
-- cased token and WordPiece identity;
-- subword morphology;
-- capitalization, digits, and punctuation;
-- bidirectional context from the entire sentence.
-
-The cased representation is especially useful for person, organization, and location names. Sentence context helps disambiguate identical surface forms used with different entity types.
+The sparse feature function includes original/lowercase token forms, prefixes and suffixes of lengths 1--5, compressed word shape, length and capitalization/digit/punctuation flags, word and shape features in a three-token window, sentence-boundary markers, lexical bigrams, and the previous BIO tag. Features are mapped to 524,288 nonnegative hashed columns.
 
 #### Training configuration
 
-The primary model first trains for one epoch on all 10,000 weakly labeled documents, then resets the optimizer and fine-tunes for two epochs on human labels. The dev-selected settings are:
+The model is an averaged multiclass `SGDClassifier` with logistic loss. The dev-selected settings are:
 
 | Setting | Value |
 |---|---:|
-| Primary encoder | `bert-base-cased` |
-| Distant / human epochs | 1 / 2 |
-| Batch size | 32 sentences |
-| Optimizer | AdamW |
-| Distant / human learning rate | `3e-5` / `3e-5` |
-| Weight decay | `0.01` |
-| Warmup | 10% of training steps |
-| Learning-rate schedule | Linear decay |
-| Gradient clipping | `1.0` |
+| Hash columns | `2^19` |
+| Loss / penalty | logistic / L2 |
+| `alpha` / max epochs | `1e-6` / 20 |
+| Context / max affix | 3 / 5 tokens |
 | `O`-label loss weight | `0.60` |
-| Entity-label loss weight | `1.00` |
+| Weak-source weight | `0.50` |
 | Random seed | 571 |
 
-The lower `O` weight compensates for the large number of non-entity tokens. Length-grouped batches reduce padding without changing examples. The supervised companion uses the earlier DistilBERT configuration (two epochs, learning rate `5e-5`). On dev, `ner_ensemble.py` selects all primary PER mentions and exact agreement between the two models for the other five types. The script automatically selects CUDA, Apple MPS, or CPU.
+Weak training keeps every weak entity token plus `O` tokens within two positions of a weak mention. This uses all 10,000 documents while preventing their roughly two million background tokens from dominating.
 
 #### Decoding and output
 
-At inference time, the highest-scoring label at the first WordPiece is mapped back to each original token. An `I-X` label that does not follow `B-X` or `I-X` is repaired to `B-X`. BIO sequences are converted to mention spans, and mentions with the same type and case-folded surface form are grouped into one Re-DocRED entity. Grouping changes the `vertexSet` structure but not mention-level NER scores.
+Width-4 left-to-right beam decoding uses class log probabilities and rejects illegal `I-X` transitions. A final repair converts any orphaned `I-X` to `B-X`. Mentions with the same type and case-folded surface form are grouped into one Re-DocRED entity.
 
-The first run fine-tunes the encoders and saves caches under `models/`. A cache is reused only when training-file metadata and every model-setting hyperparameter match.
+The first run trains the linear classifier and saves its cache under `models/`. A cache is reused only when training-file metadata and every model-setting hyperparameter match.
 
 #### NER results
 
@@ -97,12 +83,12 @@ Scores use exact mention matching: sentence ID, start, end, and type must all ag
 
 | Split | Precision | Recall | Micro-F1 |
 |---|---:|---:|---:|
-| Development, supervised baseline | 0.8616 | 0.8931 | 0.8771 |
-| Development, final distant ensemble | 0.9151 | 0.8772 | **0.8958** |
-| Test, supervised baseline | 0.8597 | 0.8903 | 0.8747 |
-| Test, final distant ensemble | 0.9129 | 0.8766 | **0.8944** |
+| Development, supervised baseline | 0.7563 | 0.7592 | 0.7578 |
+| Development, final distant model | 0.7783 | 0.7854 | **0.7818** |
+| Test, supervised baseline | 0.7522 | 0.7506 | 0.7514 |
+| Test, final distant model | 0.7766 | 0.7818 | **0.7792** |
 
-The test improvement is +.0197 absolute micro-F1 (approximately two points). Final reports are `results/ner_ds_dev_scores.json` and `results/ner_ds_test_scores.json`; error files separate type-only, boundary-only, combined, missed, and spurious cases.
+The test improvement is +.0278 absolute micro-F1. Final reports are `results/ner_ds_dev_scores.json` and `results/ner_ds_test_scores.json`; error files separate type-only, boundary-only, combined, missed, and spurious cases.
 
 ### Relation extraction
 
@@ -139,14 +125,13 @@ The relation settings were selected using full-pipeline dev micro-F1 and then lo
 
 | Split | Training | Entity input | Precision | Recall | Micro-F1 |
 |---|---|---|---:|---:|---:|
-| Development | Supervised | Predicted | 0.3631 | 0.2918 | 0.3236 |
-| Development | + distant, final | Predicted | 0.3850 | 0.3856 | **0.3853** |
-| Test | Supervised | Predicted | 0.3620 | 0.2965 | 0.3260 |
-| Test | + distant, final | Predicted | 0.3842 | 0.3957 | **0.3899** |
-| Test | Supervised | Gold | 0.5014 | 0.3431 | 0.4074 |
+| Development | Supervised | Predicted | 0.3194 | 0.3569 | 0.3371 |
+| Development | + distant, final | Predicted | 0.3255 | 0.3548 | **0.3395** |
+| Test | Supervised | Predicted | 0.3219 | 0.3607 | 0.3402 |
+| Test | + distant, final | Predicted | 0.3246 | 0.3609 | **0.3418** |
 | Test | + distant, final | Gold | 0.4839 | 0.4629 | 0.4732 |
 
-All four final files pass `check_format.py` with zero errors and are accepted by both evaluators. They were also opened in `annotation_viewer.html`; all 500 test documents rendered with populated entity/BIO layers, and RE rendered 17,970 triples across 91 relation types. Relative to the supervised full-pipeline test baseline, final RE gains .0639 absolute F1.
+All four final files pass `check_format.py` with zero errors and are accepted by both evaluators. They were also opened in `annotation_viewer.html`; all 500 test documents rendered with populated entity/BIO and relation layers. Final RE reaches 0.3418 full-pipeline test F1.
 
 ### Evaluation
 

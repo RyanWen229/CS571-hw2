@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Contextual BIO tagger for Re-DocRED NER inference.
+"""Fast, self-contained BIO tagger for Re-DocRED NER inference.
 
 Usage: python ner_predict.py INPUT.json OUTPUT.json [HYPERPARAMETERS]
 
-The default DistilBERT configuration was selected only on the development
-partition. A trained model is cached beside the training data and reused when
-the training file and every model-setting hyperparameter match.
+The model is trained from data/train_revised.json by default. A cached model is
+reused only when both the training file and all hyperparameters match. Mentions
+with the same type and case-folded token string are grouped as one entity.
 """
 
 from __future__ import annotations
@@ -13,36 +13,101 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import random
+import pickle
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Iterable
 
-VALID_TYPES = ("PER", "ORG", "LOC", "TIME", "NUM", "MISC")
-LABELS = ("O",) + tuple(
-    f"{prefix}-{entity_type}"
-    for entity_type in VALID_TYPES
-    for prefix in ("B", "I")
-)
-LABEL_TO_ID = {label: index for index, label in enumerate(LABELS)}
-MODEL_VERSION = 3
+
+# Bump this whenever feature construction changes so stale cached models are ignored.
+FEATURE_VERSION = 5
+VALID_TYPES = {"PER", "ORG", "LOC", "TIME", "NUM", "MISC"}
 
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """Settings that affect training, tokenization, or predictions."""
+    """Settings that affect features, optimization, or predictions."""
 
-    pretrained_model: str = "distilbert-base-cased"
-    epochs: int = 2
-    distant_epochs: int = 1
-    distant_learning_rate: float = 3e-5
-    batch_size: int = 32
-    learning_rate: float = 5e-5
+    # Defaults were selected using strict span-level micro-F1 on dev only.
+    # Feature hashing keeps the vocabulary bounded without a token-to-column map.
+    hash_size: int = 1 << 19
+    context_window: int = 3
+    affix_length: int = 5
     outside_weight: float = 0.60
-    weight_decay: float = 0.01
-    warmup_ratio: float = 0.10
-    max_length: int = 512
+    alpha: float = 1e-6
+    max_iter: int = 20
+    tol: float = 1e-3
+    loss: str = "log_loss"
+    penalty: str = "l2"
+    l1_ratio: float = 0.15
+    average: bool = True
     random_state: int = 571
+    distant_weight: float = 0.50
+
+
+def word_shape(word: str) -> str:
+    """Map characters to compact case/digit/punctuation classes."""
+    mapped = []
+    for char in word:
+        if char.isupper():
+            code = "X"
+        elif char.islower():
+            code = "x"
+        elif char.isdigit():
+            code = "d"
+        else:
+            code = char
+        # Collapse repeated classes (for example, "USA2024" becomes "Xd").
+        if not mapped or mapped[-1] != code:
+            mapped.append(code)
+    return "".join(mapped[:12])
+
+
+def token_features(
+    tokens: list[str],
+    index: int,
+    previous_tag: str,
+    config: ModelConfig,
+) -> list[str]:
+    """Return sparse string features for one token."""
+    word = tokens[index]
+    lower = word.casefold()
+    features = [
+        "bias",
+        f"w={word}",
+        f"lower={lower}",
+        f"shape={word_shape(word)}",
+        f"prevtag={previous_tag}",
+        f"len={min(len(word), 15)}",
+        f"upper={word.isupper()}",
+        f"title={word.istitle()}",
+        f"lowercase={word.islower()}",
+        f"digit={word.isdigit()}",
+        f"hasdigit={any(c.isdigit() for c in word)}",
+        f"hyphen={'-' in word}",
+        f"alnum={word.isalnum()}",
+    ]
+    # Short affixes help recognize names and common entity-specific endings.
+    for size in range(1, min(config.affix_length, len(lower)) + 1):
+        features.append(f"pre{size}={lower[:size]}")
+        features.append(f"suf{size}={lower[-size:]}")
+
+    # Include a configurable token window with explicit sentence-boundary markers.
+    offsets = range(-config.context_window, config.context_window + 1)
+    for offset in (offset for offset in offsets if offset):
+        pos = index + offset
+        if 0 <= pos < len(tokens):
+            nearby = tokens[pos]
+            features.extend(
+                (f"ctx{offset}={nearby.casefold()}", f"ctxshape{offset}={word_shape(nearby)}")
+            )
+        else:
+            features.append(f"ctx{offset}=<BOUNDARY>")
+    before = tokens[index - 1].casefold() if index else "<START>"
+    after = tokens[index + 1].casefold() if index + 1 < len(tokens) else "<END>"
+    features.extend((f"leftbigram={before}|{lower}", f"rightbigram={lower}|{after}"))
+    return features
 
 
 def sentence_tags(doc: dict) -> list[list[str]]:
@@ -60,6 +125,7 @@ def sentence_tags(doc: dict) -> list[list[str]]:
             if entity_type in VALID_TYPES:
                 mentions.append((-(end - start), sent_id, start, end, entity_type))
 
+    # Negative lengths make longer mentions win when annotated spans overlap.
     for _, sent_id, start, end, entity_type in sorted(mentions):
         if not (0 <= sent_id < len(tags) and 0 <= start < end <= len(tags[sent_id])):
             continue
@@ -68,6 +134,144 @@ def sentence_tags(doc: dict) -> list[list[str]]:
         tags[sent_id][start] = f"B-{entity_type}"
         tags[sent_id][start + 1 : end] = [f"I-{entity_type}"] * (end - start - 1)
     return tags
+
+
+def training_rows(
+    documents: Iterable[dict],
+    config: ModelConfig,
+    focus_entities: bool = False,
+):
+    """Yield token features and gold tags in document order."""
+    for doc in documents:
+        labels = sentence_tags(doc)
+        for tokens, tags in zip(doc.get("sents", []), labels):
+            selected = [True] * len(tags)
+            if focus_entities:
+                entity_positions = [index for index, tag in enumerate(tags) if tag != "O"]
+                selected = [
+                    tag != "O" or any(abs(index - entity) <= 2 for entity in entity_positions)
+                    for index, tag in enumerate(tags)
+                ]
+            # The previous gold tag gives the classifier local sequence context.
+            previous = "<START>"
+            for index, tag in enumerate(tags):
+                if selected[index]:
+                    yield token_features(tokens, index, previous, config), tag
+                previous = tag
+
+
+def train_model(train_path: Path, distant_path: Path | None, config: ModelConfig):
+    """Fit the hashed-feature token classifier from the annotated training set."""
+    try:
+        from sklearn.feature_extraction import FeatureHasher
+        from sklearn.linear_model import SGDClassifier
+    except ImportError as exc:
+        raise SystemExit("ner_predict.py requires scikit-learn") from exc
+
+    with train_path.open(encoding="utf-8") as stream:
+        documents = json.load(stream)
+    distant_documents = []
+    if distant_path is not None:
+        with distant_path.open(encoding="utf-8") as stream:
+            distant_documents = json.load(stream)
+    vectorizer = FeatureHasher(
+        n_features=config.hash_size,
+        input_type="string",
+        alternate_sign=False,
+        dtype="float32",
+    )
+    labels = []
+    source_weights = []
+
+    def feature_stream():
+        for features, label in training_rows(documents, config):
+            labels.append(label)
+            source_weights.append(1.0)
+            yield features
+        for features, label in training_rows(
+            distant_documents, config, focus_entities=True
+        ):
+            labels.append(label)
+            source_weights.append(config.distant_weight)
+            yield features
+
+    matrix = vectorizer.transform(feature_stream())
+    # Most tokens are not entities, so reduce their influence during training.
+    weights = [
+        source_weight * (config.outside_weight if label == "O" else 1.0)
+        for label, source_weight in zip(labels, source_weights)
+    ]
+    classifier = SGDClassifier(
+        loss=config.loss,
+        penalty=config.penalty,
+        alpha=config.alpha,
+        l1_ratio=config.l1_ratio,
+        max_iter=config.max_iter,
+        tol=config.tol,
+        average=config.average,
+        random_state=config.random_state,
+        n_jobs=-1,
+    )
+    classifier.fit(matrix, labels, sample_weight=weights)
+    return vectorizer, classifier
+
+
+def model_signature(train_path: Path, distant_path: Path | None, config: ModelConfig) -> dict:
+    """Describe everything that must match before a cached model is reusable."""
+    stat = train_path.stat()
+    distant_stat = distant_path.stat() if distant_path is not None else None
+    return {
+        "feature_version": FEATURE_VERSION,
+        "train_size": stat.st_size,
+        "train_mtime_ns": stat.st_mtime_ns,
+        "distant_size": distant_stat.st_size if distant_stat else None,
+        "distant_mtime_ns": distant_stat.st_mtime_ns if distant_stat else None,
+        "config": asdict(config),
+    }
+
+
+def default_cache_path(train_path: Path, config: ModelConfig) -> Path:
+    """Use a separate cache file for each hyperparameter configuration."""
+    settings = json.dumps(asdict(config), sort_keys=True).encode("utf-8")
+    key = hashlib.sha256(settings).hexdigest()[:12]
+    return train_path.parent / f".ner_model_{key}.pkl"
+
+
+def load_or_train(
+    train_path: Path,
+    distant_path: Path | None,
+    cache_path: Path,
+    config: ModelConfig,
+    force_retrain: bool = False,
+):
+    """Return a compatible cached model, or train and cache a new one."""
+    # File metadata makes this check inexpensive even for a large training file.
+    signature = model_signature(train_path, distant_path, config)
+    if not force_retrain:
+        try:
+            with cache_path.open("rb") as stream:
+                cached = pickle.load(stream)
+            if cached.get("signature") == signature:
+                return cached["vectorizer"], cached["classifier"]
+        except (OSError, EOFError, pickle.PickleError, AttributeError, ValueError):
+            # A missing or damaged cache is non-fatal because it can be rebuilt.
+            pass
+
+    vectorizer, classifier = train_model(train_path, distant_path, config)
+    try:
+        with cache_path.open("wb") as stream:
+            pickle.dump(
+                {
+                    "signature": signature,
+                    "vectorizer": vectorizer,
+                    "classifier": classifier,
+                },
+                stream,
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+    except OSError:
+        pass
+    return vectorizer, classifier
 
 
 def repair_bio(tags: list[str]) -> list[str]:
@@ -80,6 +284,62 @@ def repair_bio(tags: list[str]) -> list[str]:
         repaired.append(tag)
         previous = tag
     return repaired
+
+
+def predict_tags(
+    documents: list[dict], vectorizer, classifier, config: ModelConfig
+) -> list[list[list[str]]]:
+    """Decode with a small left-to-right beam and enforce legal BIO transitions."""
+    import numpy as np
+
+    sentences = []
+    locations = []
+    predictions = [[[] for _ in doc.get("sents", [])] for doc in documents]
+    for doc_id, doc in enumerate(documents):
+        for sent_id, tokens in enumerate(doc.get("sents", [])):
+            sentences.append(tokens)
+            locations.append((doc_id, sent_id))
+
+    beam_width = 4
+    beams: list[list[tuple[float, list[str]]]] = [[(0.0, [])] for _ in sentences]
+    max_length = max((len(sentence) for sentence in sentences), default=0)
+    for index in range(max_length):
+        active = [sent_id for sent_id, sentence in enumerate(sentences) if index < len(sentence)]
+        row_owners = []
+        rows = []
+        for sentence_id in active:
+            for beam_id, (_, history) in enumerate(beams[sentence_id]):
+                previous = history[-1] if history else "<START>"
+                rows.append(token_features(sentences[sentence_id], index, previous, config))
+                row_owners.append((sentence_id, beam_id))
+        if not rows:
+            continue
+        if hasattr(classifier, "predict_log_proba"):
+            log_probabilities = classifier.predict_log_proba(vectorizer.transform(rows))
+        else:
+            scores = classifier.decision_function(vectorizer.transform(rows))
+            scores = scores - scores.max(axis=1, keepdims=True)
+            probabilities = np.exp(scores)
+            probabilities /= probabilities.sum(axis=1, keepdims=True)
+            log_probabilities = np.log(np.maximum(probabilities, 1e-12))
+        candidates: dict[int, list[tuple[float, list[str]]]] = {sid: [] for sid in active}
+        for row_id, (sentence_id, beam_id) in enumerate(row_owners):
+            score, history = beams[sentence_id][beam_id]
+            previous = history[-1] if history else "O"
+            for label_id, label in enumerate(classifier.classes_):
+                label = str(label)
+                if label.startswith("I-") and previous not in (f"B-{label[2:]}", label):
+                    continue
+                candidates[sentence_id].append(
+                    (score + float(log_probabilities[row_id, label_id]), history + [label])
+                )
+        for sentence_id in active:
+            beams[sentence_id] = sorted(candidates[sentence_id], reverse=True)[:beam_width]
+
+    for sentence_id, sentence_beams in enumerate(beams):
+        doc_id, sent_id = locations[sentence_id]
+        predictions[doc_id][sent_id] = repair_bio(sentence_beams[0][1])
+    return predictions
 
 
 def mentions_from_tags(tokens: list[str], tags: list[str], sent_id: int) -> list[dict]:
@@ -110,269 +370,20 @@ def mentions_from_tags(tokens: list[str], tags: list[str], sent_id: int) -> list
 def add_entities(documents: list[dict], predictions: list[list[list[str]]]) -> list[dict]:
     """Attach predicted mentions to copies of the input documents."""
     output = []
-    for doc, document_tags in zip(documents, predictions):
+    for doc, sentence_tags_ in zip(documents, predictions):
         grouped = {}
-        for sent_id, (tokens, tags) in enumerate(zip(doc.get("sents", []), document_tags)):
+        for sent_id, (tokens, tags) in enumerate(zip(doc.get("sents", []), sentence_tags_)):
             for mention in mentions_from_tags(tokens, tags, sent_id):
-                key = (
-                    mention["type"],
-                    re.sub(r"\s+", " ", mention["name"].casefold()).strip(),
-                )
+                # Repeated surface forms of the same type are treated as one entity.
+                key = (mention["type"], re.sub(r"\s+", " ", mention["name"].casefold()).strip())
                 grouped.setdefault(key, []).append(mention)
+        # Preserve source metadata and sentences, but never carry gold relations
+        # into an inference result.
         predicted = dict(doc)
         predicted.pop("labels", None)
         predicted["vertexSet"] = list(grouped.values())
         output.append(predicted)
     return output
-
-
-def flatten_sentences(documents: list[dict], include_labels: bool = False):
-    """Flatten document sentences while retaining output locations."""
-    tokens, labels, locations = [], [], []
-    for doc_id, doc in enumerate(documents):
-        doc_labels = sentence_tags(doc) if include_labels else None
-        for sent_id, sentence in enumerate(doc.get("sents", [])):
-            tokens.append(sentence)
-            locations.append((doc_id, sent_id))
-            if include_labels:
-                labels.append(doc_labels[sent_id])
-    return tokens, labels, locations
-
-
-def encode_sentences(tokenizer, sentences, max_length: int, tags=None):
-    """Subword-tokenize sentences and align labels to first word pieces."""
-    encoded = tokenizer(
-        sentences,
-        is_split_into_words=True,
-        truncation=True,
-        max_length=max_length,
-        padding=False,
-    )
-    encoded_labels = None
-    if tags is not None:
-        encoded_labels = []
-        for row_index, sentence_labels in enumerate(tags):
-            previous_word = None
-            row = []
-            for word_id in encoded.word_ids(batch_index=row_index):
-                if word_id is None or word_id == previous_word:
-                    row.append(-100)
-                else:
-                    row.append(LABEL_TO_ID[sentence_labels[word_id]])
-                previous_word = word_id
-            encoded_labels.append(row)
-    return encoded, encoded_labels
-
-
-class EncodedSentences:
-    """Small torch-compatible dataset without importing torch at module load."""
-
-    def __init__(self, encodings, labels=None):
-        self.encodings = encodings
-        self.labels = labels
-
-    def __len__(self):
-        return len(self.encodings["input_ids"])
-
-    def __getitem__(self, index):
-        item = {key: value[index] for key, value in self.encodings.items()}
-        if self.labels is not None:
-            item["labels"] = self.labels[index]
-        return item
-
-
-def file_signature(path: Path) -> dict:
-    stat = path.stat()
-    return {
-        "path": str(path.resolve()),
-        "size": stat.st_size,
-        "mtime_ns": stat.st_mtime_ns,
-    }
-
-
-def model_signature(
-    train_path: Path, distant_path: Path | None, config: ModelConfig
-) -> dict:
-    """Describe everything that must match before a cache is reusable."""
-    signature = {
-        "model_version": MODEL_VERSION,
-        "train": file_signature(train_path),
-        "config": asdict(config),
-    }
-    if distant_path is not None:
-        signature["distant"] = file_signature(distant_path)
-    return signature
-
-
-def default_cache_path(
-    train_path: Path, distant_path: Path | None, config: ModelConfig
-) -> Path:
-    """Use a separate cache directory for each training configuration."""
-    cache_key = {
-        "config": asdict(config),
-        "distant": str(distant_path.resolve()) if distant_path is not None else None,
-    }
-    settings = json.dumps(cache_key, sort_keys=True).encode("utf-8")
-    key = hashlib.sha256(settings).hexdigest()[:12]
-    return train_path.parent / f".ner_transformer_{key}"
-
-
-def cache_matches(cache_path: Path, signature: dict) -> bool:
-    try:
-        with (cache_path / "ner_signature.json").open(encoding="utf-8") as stream:
-            return json.load(stream) == signature
-    except (OSError, json.JSONDecodeError):
-        return False
-
-
-def train_or_load(
-    train_path,
-    distant_path,
-    cache_path,
-    config,
-    device,
-    force_retrain=False,
-):
-    """Load a compatible transformer cache, or fine-tune and save one."""
-    try:
-        import torch
-        from torch.nn import CrossEntropyLoss
-        from torch.utils.data import DataLoader
-        from transformers import (
-            AutoModelForTokenClassification,
-            AutoTokenizer,
-            DataCollatorForTokenClassification,
-            get_linear_schedule_with_warmup,
-        )
-    except ImportError as exc:
-        raise SystemExit(
-            "ner_predict.py requires torch and transformers "
-            "(install with: python -m pip install torch transformers)"
-        ) from exc
-
-    signature = model_signature(train_path, distant_path, config)
-    if not force_retrain and cache_matches(cache_path, signature):
-        tokenizer = AutoTokenizer.from_pretrained(cache_path, use_fast=True)
-        model = AutoModelForTokenClassification.from_pretrained(cache_path).to(device)
-        return tokenizer, model
-
-    tokenizer = AutoTokenizer.from_pretrained(config.pretrained_model, use_fast=True)
-    model = AutoModelForTokenClassification.from_pretrained(
-        config.pretrained_model,
-        num_labels=len(LABELS),
-        id2label=dict(enumerate(LABELS)),
-        label2id=LABEL_TO_ID,
-    ).to(device)
-    weights = torch.ones(len(LABELS), device=device)
-    weights[LABEL_TO_ID["O"]] = config.outside_weight
-    loss_function = CrossEntropyLoss(weight=weights, ignore_index=-100)
-
-    def train_stage(path: Path, epochs: int, learning_rate: float, name: str) -> None:
-        with path.open(encoding="utf-8") as stream:
-            documents = json.load(stream)
-        train_tokens, train_tags, _ = flatten_sentences(documents, include_labels=True)
-        encodings, labels = encode_sentences(
-            tokenizer, train_tokens, config.max_length, train_tags
-        )
-        collator = DataCollatorForTokenClassification(tokenizer, pad_to_multiple_of=8)
-        ordered = sorted(
-            range(len(encodings["input_ids"])),
-            key=lambda index: len(encodings["input_ids"][index]),
-        )
-        batches = [
-            ordered[index : index + config.batch_size]
-            for index in range(0, len(ordered), config.batch_size)
-        ]
-        random.Random(config.random_state).shuffle(batches)
-        loader = DataLoader(
-            EncodedSentences(encodings, labels),
-            batch_sampler=batches,
-            collate_fn=collator,
-        )
-        optimizer = torch.optim.AdamW(
-            model.parameters(), lr=learning_rate, weight_decay=config.weight_decay
-        )
-        total_steps = len(loader) * epochs
-        scheduler = get_linear_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=int(total_steps * config.warmup_ratio),
-            num_training_steps=total_steps,
-        )
-        for epoch in range(epochs):
-            model.train()
-            running_loss = 0.0
-            for step, batch in enumerate(loader, start=1):
-                batch = {key: value.to(device) for key, value in batch.items()}
-                gold = batch.pop("labels")
-                logits = model(**batch).logits
-                loss = loss_function(logits.reshape(-1, len(LABELS)), gold.reshape(-1))
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad(set_to_none=True)
-                running_loss += loss.item()
-                if step % 100 == 0:
-                    print(
-                        f"{name} epoch {epoch + 1}/{epochs}, "
-                        f"step {step}/{len(loader)}, "
-                        f"mean loss {running_loss / step:.4f}",
-                        flush=True,
-                    )
-        del documents, train_tokens, train_tags, encodings, labels, loader
-
-    if distant_path is not None:
-        train_stage(
-            distant_path,
-            config.distant_epochs,
-            config.distant_learning_rate,
-            "distant",
-        )
-    train_stage(train_path, config.epochs, config.learning_rate, "human")
-
-    cache_path.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(cache_path)
-    tokenizer.save_pretrained(cache_path)
-    with (cache_path / "ner_signature.json").open("w", encoding="utf-8") as stream:
-        json.dump(signature, stream, indent=2, sort_keys=True)
-    return tokenizer, model
-
-
-def predict_tags(documents, tokenizer, model, config, device):
-    """Predict word-level BIO tags from contextual subword representations."""
-    import torch
-    from torch.utils.data import DataLoader
-    from transformers import DataCollatorForTokenClassification
-
-    sentences, _, locations = flatten_sentences(documents)
-    encodings, _ = encode_sentences(tokenizer, sentences, config.max_length)
-    collator = DataCollatorForTokenClassification(tokenizer, pad_to_multiple_of=8)
-    loader = DataLoader(
-        EncodedSentences(encodings),
-        batch_size=config.batch_size * 2,
-        shuffle=False,
-        collate_fn=collator,
-    )
-    predictions = [[[] for _ in doc.get("sents", [])] for doc in documents]
-    model.eval()
-    offset = 0
-    with torch.no_grad():
-        for batch in loader:
-            batch = {key: value.to(device) for key, value in batch.items()}
-            batch_predictions = model(**batch).logits.argmax(dim=-1).cpu().tolist()
-            for local_index, token_predictions in enumerate(batch_predictions):
-                row_index = offset + local_index
-                word_ids = encodings.word_ids(batch_index=row_index)
-                tags = ["O"] * len(sentences[row_index])
-                previous_word = None
-                for token_index, word_id in enumerate(word_ids):
-                    if word_id is not None and word_id != previous_word:
-                        tags[word_id] = LABELS[token_predictions[token_index]]
-                    previous_word = word_id
-                doc_id, sent_id = locations[row_index]
-                predictions[doc_id][sent_id] = repair_bio(tags)
-            offset += len(batch_predictions)
-    return predictions
 
 
 def positive_int(value: str) -> int:
@@ -400,28 +411,47 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train and run the Re-DocRED NER tagger")
     parser.add_argument("input", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--train", type=Path)
-    parser.add_argument("--distant-train", type=Path)
-    parser.add_argument("--pretrained-model", default="distilbert-base-cased")
-    parser.add_argument("--epochs", type=positive_int, default=2)
-    parser.add_argument("--distant-epochs", type=positive_int, default=1)
-    parser.add_argument("--distant-learning-rate", type=positive_float, default=3e-5)
-    parser.add_argument("--batch-size", type=positive_int, default=32)
-    parser.add_argument("--learning-rate", type=positive_float, default=5e-5)
-    parser.add_argument("--outside-weight", type=unit_float, default=0.60)
-    parser.add_argument("--weight-decay", type=unit_float, default=0.01)
-    parser.add_argument("--warmup-ratio", type=unit_float, default=0.10)
-    parser.add_argument("--max-length", type=positive_int, default=512)
-    parser.add_argument("--random-state", type=int, default=571)
-    parser.add_argument("--cache", type=Path)
-    parser.add_argument("--force-retrain", action="store_true")
-    parser.add_argument("--device", choices=("auto", "cpu", "mps", "cuda"), default="auto")
+    parser.add_argument(
+        "--train",
+        type=Path,
+        help="annotated training JSON (default: data/train_revised.json)",
+    )
+    parser.add_argument(
+        "--distant-train",
+        type=Path,
+        help="optional weakly labeled JSON for focused token training",
+    )
+    parser.add_argument("--alpha", type=positive_float, default=1e-6,
+                        help="SGD regularization strength (default: %(default)g)")
+    parser.add_argument("--max-iter", type=positive_int, default=20,
+                        help="maximum training epochs (default: %(default)s)")
+    parser.add_argument("--tol", type=positive_float, default=1e-3,
+                        help="early stopping tolerance (default: %(default)g)")
+    parser.add_argument("--outside-weight", type=unit_float, default=0.60,
+                        help="training weight for non-entity O tokens (default: %(default)s)")
+    parser.add_argument("--context-window", type=positive_int, default=3,
+                        help="neighboring tokens on each side (default: %(default)s)")
+    parser.add_argument("--affix-length", type=positive_int, default=5,
+                        help="longest prefix and suffix feature (default: %(default)s)")
+    parser.add_argument("--hash-size", type=positive_int, default=1 << 19,
+                        help="number of hashed feature columns (default: %(default)s)")
+    parser.add_argument("--loss", choices=("log_loss", "modified_huber", "hinge"),
+                        default="log_loss", help="SGD loss function (default: %(default)s)")
+    parser.add_argument("--penalty", choices=("l2", "l1", "elasticnet"), default="l2",
+                        help="regularization penalty (default: %(default)s)")
+    parser.add_argument("--l1-ratio", type=unit_float, default=0.15,
+                        help="L1 share for elasticnet penalty (default: %(default)s)")
+    parser.add_argument("--average", action=argparse.BooleanOptionalAction, default=True,
+                        help="use averaged SGD weights (default: enabled)")
+    parser.add_argument("--random-state", type=int, default=571,
+                        help="reproducible training seed (default: %(default)s)")
+    parser.add_argument("--distant-weight", type=unit_float, default=0.50,
+                        help="source weight for focused weakly labeled tokens")
+    parser.add_argument("--cache", type=Path,
+                        help="model cache path (default: parameter-specific file in data/)")
+    parser.add_argument("--force-retrain", action="store_true",
+                        help="ignore a compatible cached model")
     args = parser.parse_args()
-
-    try:
-        import torch
-    except ImportError as exc:
-        raise SystemExit("ner_predict.py requires PyTorch") from exc
 
     script_dir = Path(__file__).resolve().parent
     train_path = args.train or script_dir / "data" / "train_revised.json"
@@ -429,30 +459,23 @@ def main() -> None:
         parser.error(f"training data not found: {train_path}")
     if args.distant_train is not None and not args.distant_train.is_file():
         parser.error(f"distant training data not found: {args.distant_train}")
+
     config = ModelConfig(
-        pretrained_model=args.pretrained_model,
-        epochs=args.epochs,
-        distant_epochs=args.distant_epochs,
-        distant_learning_rate=args.distant_learning_rate,
-        batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
+        hash_size=args.hash_size,
+        context_window=args.context_window,
+        affix_length=args.affix_length,
         outside_weight=args.outside_weight,
-        weight_decay=args.weight_decay,
-        warmup_ratio=args.warmup_ratio,
-        max_length=args.max_length,
+        alpha=args.alpha,
+        max_iter=args.max_iter,
+        tol=args.tol,
+        loss=args.loss,
+        penalty=args.penalty,
+        l1_ratio=args.l1_ratio,
+        average=args.average,
         random_state=args.random_state,
+        distant_weight=args.distant_weight,
     )
-    random.seed(config.random_state)
-    torch.manual_seed(config.random_state)
-    if args.device == "auto":
-        selected = (
-            "cuda" if torch.cuda.is_available()
-            else "mps" if torch.backends.mps.is_available()
-            else "cpu"
-        )
-    else:
-        selected = args.device
-    device = torch.device(selected)
+    cache_path = args.cache or default_cache_path(train_path, config)
 
     try:
         with args.input.open(encoding="utf-8") as stream:
@@ -462,16 +485,14 @@ def main() -> None:
     if not isinstance(documents, list):
         parser.error("input JSON must be a list of documents")
 
-    cache_path = args.cache or default_cache_path(train_path, args.distant_train, config)
-    tokenizer, model = train_or_load(
+    vectorizer, classifier = load_or_train(
         train_path,
         args.distant_train,
         cache_path,
         config,
-        device,
         force_retrain=args.force_retrain,
     )
-    predictions = predict_tags(documents, tokenizer, model, config, device)
+    predictions = predict_tags(documents, vectorizer, classifier, config)
     output = add_entities(documents, predictions)
     try:
         with args.output.open("w", encoding="utf-8") as stream:

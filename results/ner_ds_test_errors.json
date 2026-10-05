@@ -1,93 +1,94 @@
 {
   "documents": 500,
   "error_analysis": {
-    "boundary_involved_share": 0.5904522613065326,
+    "boundary_involved_share": 0.38672675133142154,
     "boundary_patterns": {
-      "mixed": 1,
-      "too_narrow": 285,
-      "too_wide": 184
+      "mixed": 10,
+      "shifted": 2,
+      "too_narrow": 502,
+      "too_wide": 430
     },
     "confusion_gold_by_predicted": {
       "LOC": {
         "LOC": 0,
-        "MISC": 39,
-        "NUM": 0,
-        "ORG": 46,
-        "PER": 11,
+        "MISC": 112,
+        "NUM": 1,
+        "ORG": 99,
+        "PER": 145,
         "TIME": 0
       },
       "MISC": {
-        "LOC": 32,
+        "LOC": 240,
         "MISC": 0,
-        "NUM": 2,
-        "ORG": 61,
-        "PER": 31,
-        "TIME": 5
+        "NUM": 6,
+        "ORG": 185,
+        "PER": 164,
+        "TIME": 6
       },
       "NUM": {
         "LOC": 2,
-        "MISC": 0,
+        "MISC": 5,
         "NUM": 0,
-        "ORG": 0,
-        "PER": 0,
-        "TIME": 11
+        "ORG": 1,
+        "PER": 3,
+        "TIME": 15
       },
       "ORG": {
-        "LOC": 50,
-        "MISC": 50,
-        "NUM": 0,
+        "LOC": 280,
+        "MISC": 135,
+        "NUM": 6,
         "ORG": 0,
-        "PER": 32,
-        "TIME": 0
+        "PER": 138,
+        "TIME": 2
       },
       "PER": {
-        "LOC": 10,
-        "MISC": 21,
+        "LOC": 107,
+        "MISC": 87,
         "NUM": 1,
-        "ORG": 9,
+        "ORG": 41,
         "PER": 0,
         "TIME": 1
       },
       "TIME": {
-        "LOC": 0,
-        "MISC": 9,
-        "NUM": 5,
-        "ORG": 0,
-        "PER": 0,
+        "LOC": 10,
+        "MISC": 15,
+        "NUM": 34,
+        "ORG": 6,
+        "PER": 1,
         "TIME": 0
       }
     },
     "counts": {
-      "boundary_and_type": 102,
-      "boundary_only": 368,
-      "exact": 11351,
-      "missed": 802,
-      "spurious": 287,
-      "type_only": 326
+      "boundary_and_type": 351,
+      "boundary_only": 593,
+      "exact": 10124,
+      "missed": 384,
+      "spurious": 472,
+      "type_only": 1497
     },
     "missed_by_type": {
-      "LOC": 198,
-      "MISC": 260,
-      "NUM": 38,
-      "ORG": 197,
-      "PER": 26,
-      "TIME": 83
-    },
-    "observations": [
-      "Most frequent type confusion: MISC -> ORG (61 paired spans).",
-      "Most frequent boundary pattern: too_narrow (285 spans).",
-      "Most completely missed gold type: MISC (260 spans).",
-      "Most frequent spurious predicted type: NUM (71 spans)."
-    ],
-    "paired_near_misses": 796,
-    "spurious_by_type": {
-      "LOC": 30,
-      "MISC": 71,
-      "NUM": 71,
-      "ORG": 30,
-      "PER": 40,
+      "LOC": 95,
+      "MISC": 109,
+      "NUM": 36,
+      "ORG": 54,
+      "PER": 45,
       "TIME": 45
     },
-    "type_involved_share": 0.5376884422110553
+    "observations": [
+      "Most frequent type confusion: ORG -> LOC (280 paired spans).",
+      "Most frequent boundary pattern: too_narrow (502 spans).",
+      "Most completely missed gold type: MISC (109 spans).",
+      "Most frequent spurious predicted type: LOC (120 spans)."
+    ],
+    "paired_near_misses": 2441,
+    "spurious_by_type": {
+      "LOC": 120,
+      "MISC": 97,
+      "NUM": 74,
+      "ORG": 63,
+      "PER": 73,
+      "TIME": 45
+    },
+    "type_involved_share": 0.7570667759115117
   }
 }

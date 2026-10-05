@@ -1,12 +1,10 @@
 PYTHON ?= python
 SPLIT ?= dev
 
-NER_PRIMARY_CACHE := models/ner_bert_ds
-NER_SECONDARY_CACHE := models/ner_distil_supervised
+NER_CACHE := models/ner_feature_ds.pkl
 RE_CACHE := models/re_distant.pkl
 
-NER_PRIMARY_ARGS := --distant-train data/distant_10000.json --pretrained-model bert-base-cased --distant-epochs 1 --distant-learning-rate 3e-5 --epochs 2 --learning-rate 3e-5 --batch-size 32 --outside-weight 0.6 --cache $(NER_PRIMARY_CACHE)
-NER_SECONDARY_ARGS := --pretrained-model distilbert-base-cased --epochs 2 --learning-rate 5e-5 --batch-size 32 --outside-weight 0.6 --cache $(NER_SECONDARY_CACHE)
+NER_ARGS := --distant-train data/distant_10000.json --distant-weight 0.50 --hash-size 524288 --context-window 3 --affix-length 5 --outside-weight 0.60 --alpha 1e-6 --max-iter 20 --cache $(NER_CACHE)
 RE_ARGS := --distant-train data/distant_10000.json --distant-weight 0.25 --max-relations 2 --relation-no-ratio 0.90 --cache $(RE_CACHE)
 
 .PHONY: dirs train-ner predict-ner eval-ner train-re predict-re eval-re validate
@@ -15,14 +13,10 @@ dirs:
 	mkdir -p models artifacts predictions results
 
 train-ner: dirs
-	$(PYTHON) ner_predict.py data/dev_unlabeled.json artifacts/ner_primary_dev.json $(NER_PRIMARY_ARGS)
-	$(PYTHON) ner_predict.py data/dev_unlabeled.json artifacts/ner_secondary_dev.json $(NER_SECONDARY_ARGS)
-	$(PYTHON) ner_ensemble.py artifacts/ner_primary_dev.json artifacts/ner_secondary_dev.json predictions/ner_dev.json
+	$(PYTHON) ner_predict.py data/dev_unlabeled.json predictions/ner_dev.json $(NER_ARGS)
 
 predict-ner: dirs
-	$(PYTHON) ner_predict.py data/$(SPLIT)_unlabeled.json artifacts/ner_primary_$(SPLIT).json $(NER_PRIMARY_ARGS)
-	$(PYTHON) ner_predict.py data/$(SPLIT)_unlabeled.json artifacts/ner_secondary_$(SPLIT).json $(NER_SECONDARY_ARGS)
-	$(PYTHON) ner_ensemble.py artifacts/ner_primary_$(SPLIT).json artifacts/ner_secondary_$(SPLIT).json predictions/ner_$(SPLIT).json
+	$(PYTHON) ner_predict.py data/$(SPLIT)_unlabeled.json predictions/ner_$(SPLIT).json $(NER_ARGS)
 
 eval-ner:
 	$(PYTHON) ner_eval.py data/$(SPLIT)_revised.json predictions/ner_$(SPLIT).json --json results/ner_$(SPLIT)_scores.json
