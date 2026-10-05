@@ -1,0 +1,12 @@
+{
+  "selection_split": "development",
+  "metric": "full-pipeline micro F1",
+  "supervised_baseline": 0.3235926222935044,
+  "distant_weight_results": {
+    "0.10": 0.3269322028536176,
+    "0.25": 0.3273634386593322,
+    "0.50": 0.32560549151664286
+  },
+  "selected_distant_weight": 0.25,
+  "test_used_for_selection": false
+}

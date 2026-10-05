@@ -1,6 +1,19 @@
-# Re-DocRED (packaged for CS571)
+# CS 571 Homework 2: Entity and Relation Extraction
 
 Re-DocRED is a re-annotated version of DocRED, a dataset for document-level entity and relation extraction on English Wikipedia articles. Each document comes with its entities (grouped mentions, with one of six types) and relation instances between entities, drawn from 96 Wikidata relations. The Re-DocRED authors added relation instances that DocRED annotators had missed, removed logically inconsistent labels, and corrected coreference errors. Unlike the original DocRED test set, the Re-DocRED test set includes its labels.
+
+This repository contains an end-to-end named-entity recognition (NER) and relation-extraction pipeline, exact-match evaluators, error analysis, and the final report. Model and hyperparameter selection use the development split; the test split is reserved for final evaluation.
+
+## One-command interface
+
+Python 3.10 or later is required. Install only the allowed model libraries with `python -m pip install -r requirements.txt`. The `Makefile` provides one command for each required operation:
+
+| Part | Train | Predict one split | Evaluate one split |
+|---|---|---|---|
+| NER | `make train-ner` | `make predict-ner SPLIT=dev` | `make eval-ner SPLIT=dev` |
+| RE | `make train-re` | `make predict-re SPLIT=dev` | `make eval-re SPLIT=dev` |
+
+Replace `dev` with `test` only for the final locked evaluation. Run `make validate SPLIT=dev` or `make validate SPLIT=test` to check both prediction formats. The commands write the four submission files to `predictions/`: `ner_dev.json`, `ner_test.json`, `re_dev.json`, and `re_test.json`. Training caches go under `models/` and intermediate predictions under `artifacts/`.
 
 ## Contents
 
@@ -10,10 +23,149 @@ Re-DocRED is a re-annotated version of DocRED, a dataset for document-level enti
 | `data/dev_revised.json` | Validation (development) partition, unchanged |
 | `data/test_revised.json` | Test partition, unchanged |
 | `data/rel_info.json` | Relation ID to relation name map (96 entries), from the original DocRED release |
-| `data/unlabeled_2000.json` | 2,000 unlabeled documents (text only) for semi-supervised learning, sampled from DocRED's distantly supervised set |
+| `data/unlabeled_10000.json` | 10,000 unlabeled documents (text only) for semi-supervised learning, sampled from DocRED's distantly supervised set |
+| `data/distant_10000.json` | The same 10,000 documents with recovered DocRED/Wikidata weak entity and relation labels |
+| `prepare_distant_supervision.py` | Exact text matcher that reconstructs `distant_10000.json` from the official DocRED release |
+| `ner_predict.py`, `ner_ensemble.py` | Distant-pretrained BIO tagger, supervised companion model, and dev-selected ensemble |
+| `ner_eval.py` | Exact span-and-type NER evaluation |
+| `ner_error_analysis.py` | NER boundary and type error analysis |
+| `re_predict.py` | Hashed-feature relation classifier |
+| `re_eval.py` | Gold-entity and pipeline relation evaluation |
+| `check_format.py` | Prediction-file format validation |
+| `predictions/` | Final dev/test NER and RE submission files |
+| `results/` | Saved score reports and error-analysis summaries |
+| `Makefile`, `requirements.txt` | One-command training/prediction/evaluation and allowed dependencies |
+| `REPORT.tex`, `output/pdf/HW2_Report.pdf` | Report source and compiled report |
 | `CITATION.bib` | BibTeX for Re-DocRED and DocRED |
 | `LICENSE-Re-DocRED`, `LICENSE-DocRED` | MIT licenses of the two repositories |
-| `SHA256SUMS` | Checksums of every file above |
+| `SHA256SUMS` | Checksums for source data, recovered weak labels, and data licenses |
+
+## Methods
+
+### Named-entity recognition
+
+NER is formulated as sentence-level BIO tagging over six entity types: `PER`, `ORG`, `LOC`, `TIME`, `NUM`, and `MISC`. The primary tagger fine-tunes `bert-base-cased` as a 13-class token classifier after a distant-supervision stage; a supervised `distilbert-base-cased` companion supplies a precision-oriented ensemble vote.
+
+#### Input and label construction
+
+- Each sentence is supplied to the tokenizer as its existing Re-DocRED token list, so predicted positions remain aligned with the dataset's `[start, end)` token offsets.
+- Each fast tokenizer splits dataset tokens into WordPieces. The first WordPiece receives the token's BIO label; special tokens and later pieces are masked from the training loss.
+- If annotated spans overlap, longer spans are assigned first and conflicting shorter spans are skipped. This produces one valid BIO sequence per sentence.
+- The maximum encoded length is 512 WordPieces. The longest source sentence has fewer than 200 dataset tokens, so truncation is not expected for the supplied splits.
+
+#### Learned features
+
+The encoder learns a contextual representation rather than using a manually defined feature vector. Its evidence includes:
+
+- cased token and WordPiece identity;
+- subword morphology;
+- capitalization, digits, and punctuation;
+- bidirectional context from the entire sentence.
+
+The cased representation is especially useful for person, organization, and location names. Sentence context helps disambiguate identical surface forms used with different entity types.
+
+#### Training configuration
+
+The primary model first trains for one epoch on all 10,000 weakly labeled documents, then resets the optimizer and fine-tunes for two epochs on human labels. The dev-selected settings are:
+
+| Setting | Value |
+|---|---:|
+| Primary encoder | `bert-base-cased` |
+| Distant / human epochs | 1 / 2 |
+| Batch size | 32 sentences |
+| Optimizer | AdamW |
+| Distant / human learning rate | `3e-5` / `3e-5` |
+| Weight decay | `0.01` |
+| Warmup | 10% of training steps |
+| Learning-rate schedule | Linear decay |
+| Gradient clipping | `1.0` |
+| `O`-label loss weight | `0.60` |
+| Entity-label loss weight | `1.00` |
+| Random seed | 571 |
+
+The lower `O` weight compensates for the large number of non-entity tokens. Length-grouped batches reduce padding without changing examples. The supervised companion uses the earlier DistilBERT configuration (two epochs, learning rate `5e-5`). On dev, `ner_ensemble.py` selects all primary PER mentions and exact agreement between the two models for the other five types. The script automatically selects CUDA, Apple MPS, or CPU.
+
+#### Decoding and output
+
+At inference time, the highest-scoring label at the first WordPiece is mapped back to each original token. An `I-X` label that does not follow `B-X` or `I-X` is repaired to `B-X`. BIO sequences are converted to mention spans, and mentions with the same type and case-folded surface form are grouped into one Re-DocRED entity. Grouping changes the `vertexSet` structure but not mention-level NER scores.
+
+The first run fine-tunes the encoders and saves caches under `models/`. A cache is reused only when training-file metadata and every model-setting hyperparameter match.
+
+#### NER results
+
+Scores use exact mention matching: sentence ID, start, end, and type must all agree with gold.
+
+| Split | Precision | Recall | Micro-F1 |
+|---|---:|---:|---:|
+| Development, supervised baseline | 0.8616 | 0.8931 | 0.8771 |
+| Development, final distant ensemble | 0.9151 | 0.8772 | **0.8958** |
+| Test, supervised baseline | 0.8597 | 0.8903 | 0.8747 |
+| Test, final distant ensemble | 0.9129 | 0.8766 | **0.8944** |
+
+The test improvement is +.0197 absolute micro-F1 (approximately two points). Final reports are `results/ner_ds_dev_scores.json` and `results/ner_ds_test_scores.json`; error files separate type-only, boundary-only, combined, missed, and spurious cases.
+
+### Relation extraction
+
+Relation extraction operates on the entities in an NER prediction file. Every ordered pair of distinct entities is a candidate. The model is an averaged multiclass linear classifier trained with logistic loss; its classes are the 96 Wikidata relation IDs plus `no_relation`.
+
+#### Pair features
+
+Sparse categorical features are mapped into 524,288 dimensions with nonnegative feature hashing. For each ordered head-tail pair, the representation includes:
+
+- head type, tail type, and their ordered type combination;
+- normalized entity names, name tokens, and the ordered name pair;
+- mention-count buckets for both entities;
+- whether either entity name occurs in the document title;
+- closest-mention sentence distance, order, and same-sentence indicator;
+- for same-sentence mentions, token distance, up to 12 between-mention tokens, and immediate left/right context for each argument.
+
+All positive ordered pairs are retained. Unrelated pairs are deterministically sampled at a target ratio of five negative examples per positive relation instance. Training examples receive inverse-frequency weights, capped at 8, to reduce domination by frequent relations and `no_relation`.
+
+The selected defaults are L2-regularized averaged SGD, `alpha=2e-6`, at most 25 epochs, tolerance `1e-3`, class-balance exponent `0.2`, batch size 8,192 candidate pairs, and seed 571. The fitted feature hasher and classifier are cached using the training-file metadata and configuration.
+
+#### Distant supervision
+
+The knowledge base is [Wikidata](https://www.wikidata.org/wiki/Wikidata:Introduction), whose statements use item identifiers (`Q...`) and property identifiers (`P...`). This is a natural fit because the 96 DocRED/Re-DocRED relation classes are already Wikidata property IDs. Following the [official DocRED construction method](https://aclanthology.org/P19-1074/), entity mentions are linked and coreferent mentions with the same knowledge-base ID are merged; relations are then labeled from Wikidata properties.
+
+For reproducibility, the experiment restores the released weak annotations instead of making live Wikidata queries. `prepare_distant_supervision.py` matches every record in `unlabeled_10000.json` to official DocRED `train_distant.json` by title and the complete tokenized text. All 10,000 records match exactly, yielding 192,955 weak entity clusters and 147,974 weak relation labels. The output is `data/distant_10000.json` (SHA-256 `fe0eb23cfb502c4a5f1fc764d2c67747a8925d460e05b984767c0b9aaf125045`).
+
+All 10,000 weak documents are added to RE training. Weak rows receive the dev-selected source weight 0.25 while human rows retain weight 1.0. Class-frequency weighting and negative sampling are otherwise unchanged. A calibrated multi-label decoder emits at most two relations for a pair when each relation probability is at least 0.90 times the `no_relation` probability; both the cap and ratio were selected on the final frozen NER dev output.
+
+This two-label decoder fixes the earlier one-relation-per-pair limitation while bounding false positives.
+
+#### Relation results
+
+The relation settings were selected using full-pipeline dev micro-F1 and then locked before test evaluation.
+
+| Split | Training | Entity input | Precision | Recall | Micro-F1 |
+|---|---|---|---:|---:|---:|
+| Development | Supervised | Predicted | 0.3631 | 0.2918 | 0.3236 |
+| Development | + distant, final | Predicted | 0.3850 | 0.3856 | **0.3853** |
+| Test | Supervised | Predicted | 0.3620 | 0.2965 | 0.3260 |
+| Test | + distant, final | Predicted | 0.3842 | 0.3957 | **0.3899** |
+| Test | Supervised | Gold | 0.5014 | 0.3431 | 0.4074 |
+| Test | + distant, final | Gold | 0.4839 | 0.4629 | 0.4732 |
+
+All four final files pass `check_format.py` with zero errors and are accepted by both evaluators. They were also opened in `annotation_viewer.html`; all 500 test documents rendered with populated entity/BIO layers, and RE rendered 17,970 triples across 91 relation types. Relative to the supervised full-pipeline test baseline, final RE gains .0639 absolute F1.
+
+### Evaluation
+
+`ner_eval.py` micro-averages precision, recall, and F1 over unique mentions. The default score requires an exact span and type match; `--relaxed` additionally reports type-matched overlapping spans.
+
+`re_eval.py` supports two entity modes automatically:
+
+- **Gold entities:** predicted and gold `vertexSet` entries match, so relation arguments are evaluated by entity index.
+- **Pipeline entities:** predicted entities are greedily aligned to gold entities through exact shared mention spans. Relations involving an unaligned predicted entity are false positives. The evaluator also reports entity reach and the relation-recall ceiling imposed by NER.
+
+## Reproducing the pipeline
+
+Use Python 3.10 or newer. Install the allowed dependencies:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+The six `make` commands in **One-command interface** are the canonical workflow. Run `make train-ner`, `make predict-ner SPLIT=dev`, and `make eval-ner SPLIT=dev`; then run the corresponding three RE commands. Once both stages are fixed, repeat only prediction/evaluation with `SPLIT=test`. If weak annotations must be rebuilt, run `python prepare_distant_supervision.py /path/to/train_distant.json` once before training. For gold-entity RE diagnostics, pass `data/dev_revised.json` directly to `re_predict.py`.
 
 ## Citation
 
@@ -23,10 +175,13 @@ Qingyu Tan, Lu Xu, Lidong Bing, Hwee Tou Ng, and Sharifah Mahani Aljunied. 2022.
 
 Yuan Yao, Deming Ye, Peng Li, Xu Han, Yankai Lin, Zhenghao Liu, Zhiyuan Liu, Lixin Huang, Jie Zhou, and Maosong Sun. 2019. DocRED: A Large-Scale Document-Level Relation Extraction Dataset. In *Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics*, pages 764–777, Florence, Italy. Association for Computational Linguistics. https://aclanthology.org/P19-1074/
 
+Wikimedia Foundation. *Wikidata: Introduction* and *Wikidata: Data model*. https://www.wikidata.org/wiki/Wikidata:Introduction and https://www.wikidata.org/wiki/Help:Data_model (accessed 5 October 2026).
+
 ## Source
 
 - Re-DocRED data: https://github.com/tonytan48/Re-DocRED, commit `ccfb54f5ddf5836027c87badda10f6dfc56efaac` (21 August 2023), downloaded 22 September 2026.
 - `rel_info.json`: the official DocRED data folder, https://drive.google.com/drive/folders/1c5-0YwnoJx8NS6CV2f-NoTHR__BdkNqw (linked from https://github.com/thunlp/DocRED).
+- `data/distant_10000.json`: exact matches recovered from `train_distant.json` in that official DocRED data folder; Wikidata is the external knowledge base used by DocRED for the weak entity links and relation properties.
 - The authors' scoring script is `evaluation.py` in the Re-DocRED repository.
 
 ## Partitions
@@ -50,26 +205,25 @@ The document counts match the authors' README (3,053 / 500 / 500), as do the ave
 
 ## Unlabeled documents
 
-`data/unlabeled_2000.json` holds 2,000 documents for semi-supervised learning. Each document has only `title` and `sents`, tokenized as in the labeled files. There is no `vertexSet` and no `labels` field.
+`data/unlabeled_10000.json` holds 10,000 documents for semi-supervised learning. Each document has only `title` and `sents`, tokenized as in the labeled files. There is no `vertexSet` and no `labels` field.
 
 **Source.** DocRED's distantly supervised training set, `train_distant.json` (101,873 documents; SHA-256 `db6d3cdaab8d36926318bb9339f6fd82d19dbacd186c74d7c20c734355a58b36`), from the official DocRED data folder listed under Source. Its documents come from English Wikipedia like the labeled files, and its entity mentions and relations were produced automatically. Both were removed.
 
 **Exclusions.** Before sampling, 4 documents whose token sequences are identical to a human-annotated DocRED or Re-DocRED document (any partition) were removed, and repeated texts within the distant set were reduced to one copy. This left 101,861 candidate documents. No sampled document shares a title or text with any labeled document.
 
-**Sampling.** The documents were stratified to match Re-DocRED train on document length and entity count. Re-DocRED train was divided into a 5 × 5 grid by quintiles of token count and entity count. The 2,000 documents were allocated to the 25 cells in proportion to Re-DocRED train, and sampled at random within each cell with Python's `random.Random(571)`. Entity counts for the candidates came from the distant set's automatic mentions, which are not included.
+**Sampling.** The documents were stratified to match Re-DocRED train on document length and entity count. Re-DocRED train was divided into a 5 × 5 grid by quintiles of token count and entity count. The 10,000 documents were allocated to the 25 cells in proportion to Re-DocRED train, and sampled at random within each cell with Python's `random.Random(571)`. Entity counts for the candidates came from the distant set's automatic mentions, which are not included.
 
-| | Re-DocRED train | `unlabeled_2000.json` |
+| | Re-DocRED train | `unlabeled_10000.json` |
 |---|---:|---:|
-| Documents | 3,053 | 2,000 |
-| Sentences | 24,256 | 16,064 |
-| Tokens | 603,468 | 394,544 |
-| Median / mean tokens per document | 179 / 197.7 | 181 / 197.3 |
-| Median / mean sentences per document | 7 / 7.9 | 8 / 8.0 |
-| Median / mean entities per document | 19 / 19.4 | 19 / 19.4 (automatic mentions, removed) |
+| Documents | 3,053 | 10,000 |
+| Sentences | 24,256 | 81,107 |
+| Tokens | 603,468 | 1,989,204 |
+| Median / mean tokens per document | 179 / 197.7 | 180 / 198.9 |
+| Median / mean sentences per document | 7 / 7.9 | 8 / 8.1 |
 
-Kolmogorov–Smirnov distances to Re-DocRED train are 0.016 for tokens, 0.010 for entities and 0.017 for sentences.
+Kolmogorov–Smirnov distances to Re-DocRED train are 0.011 for tokens and 0.032 for sentences.
 
-**Use.** Methods that need entity mentions have to predict them first. Code that reads a missing `labels` field as an empty list would treat these documents as having no relations.
+**Use.** Methods that need entity mentions have to predict them first. Code that reads a missing `labels` field as an empty list would treat these documents as having no relations. The included distant-supervision experiment reconstructs the released automatic mentions and Wikidata relations with `prepare_distant_supervision.py`, uses all 10,000 documents, and downweights their training rows to 0.25 based on dev performance.
 
 ## Record format
 
